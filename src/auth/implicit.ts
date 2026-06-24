@@ -13,7 +13,7 @@ export async function handleDeepLinkToken(plugin: AnisyncPlugin, token: string):
     return;
   }
   plugin.settings.anilistToken = token;
-  await plugin.saveSettings();
+  await plugin.saveAll();
   new Notice("Verifying connection...", 3000);
   await probeAnilistConnection(plugin);
 }
@@ -21,8 +21,8 @@ export async function handleDeepLinkToken(plugin: AnisyncPlugin, token: string):
 export async function disconnectAnilist(plugin: AnisyncPlugin): Promise<void> {
   plugin.settings.anilistToken = "";
   plugin.settings.anilistUsername = "";
-  await plugin.saveSettings();
   plugin.stopAutoSync();
+  await plugin.saveAll();
 }
 
 export async function probeAnilistConnection(plugin: AnisyncPlugin): Promise<void> {
@@ -30,7 +30,7 @@ export async function probeAnilistConnection(plugin: AnisyncPlugin): Promise<voi
   try {
     const viewer = await client.fetchViewer();
     plugin.settings.anilistUsername = viewer.name;
-    await plugin.saveSettings();
+    await plugin.saveAll();
     plugin.refreshSettingsTab();
     new Notice("Connected as @" + viewer.name + "!", 4000);
   } catch (e) {

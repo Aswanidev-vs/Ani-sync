@@ -23,7 +23,6 @@ export default class AnisyncPlugin extends Plugin {
   private syncEngine: SyncEngine | null = null;
   private syncIntervalId: number | null = null;
   private settingTab: AnisyncSettingTab | null = null;
-  private saveTimeoutId: number | null = null;
 
   async onload(): Promise<void> {
     await this.loadAll();
@@ -81,16 +80,18 @@ export default class AnisyncPlugin extends Plugin {
   onunload(): void {
     this.syncEngine?.cancel();
     this.stopAutoSync();
-    if (this.saveTimeoutId !== null) {
-      window.clearTimeout(this.saveTimeoutId);
-    }
   }
 
   async loadAll(): Promise<void> {
     const raw = (await this.loadData()) as Partial<AnisyncData> | null;
     if (raw && typeof raw === "object") {
       if (raw.settings && typeof raw.settings === "object") {
-        this.settings = { ...DEFAULT_SETTINGS, ...raw.settings };
+        const loaded = raw.settings as unknown as Record<string, unknown>;
+        if ("pollIntervalMinutes" in loaded && !("pollIntervalSeconds" in loaded)) {
+          loaded.pollIntervalSeconds = Math.max(30, ((loaded.pollIntervalMinutes as number) || 30) * 60);
+          delete loaded.pollIntervalMinutes;
+        }
+        this.settings = { ...DEFAULT_SETTINGS, ...(loaded as Partial<AnisyncSettings>) };
       }
       if (raw.cache && typeof raw.cache === "object" && raw.cache.version === 1) {
         this.cache = raw.cache;
@@ -104,23 +105,6 @@ export default class AnisyncPlugin extends Plugin {
   }
 
   async saveSettings(): Promise<void> {
-    if (this.saveTimeoutId !== null) {
-      window.clearTimeout(this.saveTimeoutId);
-    }
-    return new Promise((resolve) => {
-      this.saveTimeoutId = window.setTimeout(async () => {
-        await this.saveAll();
-        this.saveTimeoutId = null;
-        resolve();
-      }, 300);
-    });
-  }
-
-  async saveSettingsImmediate(): Promise<void> {
-    if (this.saveTimeoutId !== null) {
-      window.clearTimeout(this.saveTimeoutId);
-      this.saveTimeoutId = null;
-    }
     await this.saveAll();
   }
 
@@ -147,7 +131,7 @@ export default class AnisyncPlugin extends Plugin {
 
   startAutoSync(): void {
     this.stopAutoSync();
-    const ms = Math.max(5, this.settings.pollIntervalMinutes) * 60_000;
+    const ms = Math.max(30, this.settings.pollIntervalSeconds) * 1000;
     const id = window.setInterval(() => {
       if (this.canSync()) {
         void this.runSync().catch(() => {});
@@ -179,14 +163,11 @@ export default class AnisyncPlugin extends Plugin {
     }
 
     this.isSyncing = true;
-    this.settingTab?.showSyncProgress("Initializing sync...", 0);
+    this.settingTab?.showSyncProgress("Initializing...", 0);
 
     const client = new AnilistClient(this.settings.anilistToken, {
       onRetry: ({ attempt, waitMs, reason }) => {
-        this.settingTab?.showSyncProgress(
-          `Retrying in ${Math.round(waitMs / 1000)}s (${reason})...`,
-          15
-        );
+        this.settingTab?.showSyncProgress(`Retrying in ${Math.round(waitMs / 1000)}s (${reason})...`, 10);
       },
     });
     const vault = this.buildVaultAdapter();
@@ -205,36 +186,24 @@ export default class AnisyncPlugin extends Plugin {
       outputDir: this.settings.outputDir,
       username: this.settings.anilistUsername,
       cache: this.cache,
-      onLog: (m) => {},
+      onLog: () => {},
       onProgress: (m) => {
-        const percent = this.calculateProgress(m);
-        this.settingTab?.showSyncProgress(m, percent);
+        this.settingTab?.showSyncProgress(m, this.estimateProgress(m));
       },
     });
 
     try {
       const stats = await this.syncEngine.run();
       this.settings.lastSyncAt = new Date().toISOString();
-      this.settings.lastSyncStats = `created ${stats.created}, updated ${stats.updated}, skipped ${stats.skipped}, failed ${stats.failed}`;
-      await this.saveSettingsImmediate();
-      this.settingTab?.showSyncProgress(
-        `Sync complete: ${stats.created} created, ${stats.updated} updated, ${stats.skipped} skipped`,
-        100
-      );
-      setTimeout(() => {
-        this.settingTab?.hideSyncProgress();
-        this.refreshSettingsTab();
-      }, 2000);
-      new Notice(
-        `Ani-sync: created ${stats.created}, updated ${stats.updated}, skipped ${stats.skipped}, failed ${stats.failed}`,
-        6000,
-      );
+      this.settings.lastSyncStats = `${stats.created} created, ${stats.updated} updated, ${stats.skipped} unchanged, ${stats.failed} failed`;
+      await this.saveAll();
+      this.settingTab?.showSyncProgress("Sync complete!", 100);
+      setTimeout(() => this.settingTab?.hideSyncProgress(), 1500);
+      new Notice(`Ani-sync: done — ${stats.created} created, ${stats.updated} updated, ${stats.skipped} skipped, ${stats.failed} failed`, 6000);
     } catch (e) {
       const msg = (e as Error)?.message ?? String(e);
-      this.settingTab?.showSyncProgress(`Sync failed: ${msg}`, 100);
-      setTimeout(() => {
-        this.settingTab?.hideSyncProgress();
-      }, 3000);
+      this.settingTab?.showSyncProgress(`Failed: ${msg}`, 100);
+      setTimeout(() => this.settingTab?.hideSyncProgress(), 3000);
       new Notice(`Ani-sync sync failed: ${msg}`, 10000);
     } finally {
       this.syncEngine = null;
@@ -242,21 +211,22 @@ export default class AnisyncPlugin extends Plugin {
     }
   }
 
-  private calculateProgress(message: string): number {
-    if (message.includes("Fetching viewer") || message.includes("summary")) return 5;
-    if (message.includes("Viewer:")) return 10;
-    if (message.includes("Summary:")) return 15;
-    if (message.includes("Fetching full lists")) return 20;
-    if (message.includes("anime lists:") || message.includes("manga lists:")) return 25;
-    if (message.includes("Reusing")) return 30;
-    if (message.includes("Fetching") && message.includes("detail")) return 40;
-    if (message.includes("Detail fetch complete")) return 60;
-    if (message.includes("Artifacts planned")) return 65;
-    if (message.includes("Pre-computing hashes")) return 70;
-    if (message.includes("Hashes computed")) return 75;
-    if (message.includes("Removing")) return 85;
-    if (message.includes("removed:")) return 90;
-    if (message.includes("No changes")) return 100;
+  private estimateProgress(msg: string): number {
+    if (msg.includes("Fetching viewer") || msg.includes("summary")) return 5;
+    if (msg.includes("Viewer:")) return 10;
+    if (msg.includes("Summary:")) return 15;
+    if (msg.includes("Fetching full lists")) return 20;
+    if (msg.includes("lists:")) return 25;
+    if (msg.includes("Reusing")) return 30;
+    if (msg.includes("Fetching") && msg.includes("detail")) return 40;
+    if (msg.includes("Detail fetch")) return 60;
+    if (msg.includes("Artifacts")) return 65;
+    if (msg.includes("Pre-computing")) return 70;
+    if (msg.includes("Hashes")) return 75;
+    if (msg.includes("Removing")) return 85;
+    if (msg.includes("removed:")) return 90;
+    if (msg.includes("No changes")) return 100;
+    if (msg.includes("complete")) return 100;
     return 50;
   }
 

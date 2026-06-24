@@ -3,9 +3,10 @@ import type AnisyncPlugin from "./main";
 
 export class AnisyncSettingTab extends PluginSettingTab {
   private plugin: AnisyncPlugin;
-  private syncProgressEl: HTMLDivElement | null = null;
-  private syncProgressBar: HTMLDivElement | null = null;
-  private syncProgressText: HTMLDivElement | null = null;
+  private progressEl: HTMLDivElement | null = null;
+  private progressFill: HTMLDivElement | null = null;
+  private progressLabel: HTMLDivElement | null = null;
+  private lastProgressUpdate = 0;
 
   constructor(app: App, plugin: AnisyncPlugin) {
     super(app, plugin);
@@ -22,37 +23,38 @@ export class AnisyncSettingTab extends PluginSettingTab {
       cls: "setting-item-description",
     });
 
-    this.renderSyncProgress(containerEl);
+    this.renderProgressBar(containerEl);
     this.renderOAuthSection(containerEl);
     this.renderSyncSection(containerEl);
     this.renderActionsSection(containerEl);
   }
 
-  private renderSyncProgress(containerEl: HTMLElement): void {
-    const progressContainer = containerEl.createDiv({ cls: "anisync-progress-container" });
-    progressContainer.style.display = this.plugin.isSyncing ? "block" : "none";
-
-    this.syncProgressBar = progressContainer.createDiv({ cls: "anisync-progress-fill" });
-    this.syncProgressBar.style.width = "0%";
-
-    this.syncProgressText = progressContainer.createDiv({ cls: "anisync-progress-text" });
-    this.syncProgressText.setText("Initializing sync...");
-
-    this.syncProgressEl = progressContainer;
-  }
-
   showSyncProgress(message: string, percent: number): void {
-    if (!this.syncProgressEl || !this.syncProgressBar || !this.syncProgressText) return;
-    this.syncProgressEl.style.display = "block";
-    this.syncProgressBar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
-    this.syncProgressText.setText(message);
+    const now = Date.now();
+    if (now - this.lastProgressUpdate < 200) return;
+    this.lastProgressUpdate = now;
+
+    if (!this.progressEl || !this.progressFill || !this.progressLabel) return;
+    this.progressEl.style.display = "block";
+    this.progressFill.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+    this.progressLabel.setText(message);
   }
 
   hideSyncProgress(): void {
-    if (!this.syncProgressEl || !this.syncProgressBar || !this.syncProgressText) return;
-    this.syncProgressEl.style.display = "none";
-    this.syncProgressBar.style.width = "0%";
-    this.syncProgressText.setText("");
+    if (!this.progressEl || !this.progressFill || !this.progressLabel) return;
+    this.progressEl.style.display = "none";
+    this.progressFill.style.width = "0%";
+    this.progressLabel.setText("");
+  }
+
+  private renderProgressBar(containerEl: HTMLElement): void {
+    const wrap = containerEl.createDiv({ cls: "anisync-progress-container" });
+    wrap.style.display = this.plugin.isSyncing ? "block" : "none";
+    this.progressFill = wrap.createDiv({ cls: "anisync-progress-fill" });
+    this.progressFill.style.width = "0%";
+    this.progressLabel = wrap.createDiv({ cls: "anisync-progress-text" });
+    this.progressLabel.setText("");
+    this.progressEl = wrap;
   }
 
   private renderOAuthSection(containerEl: HTMLElement): void {
@@ -61,23 +63,21 @@ export class AnisyncSettingTab extends PluginSettingTab {
 
     containerEl.createEl("h3", { text: "AniList Connection" });
 
-    const statusCard = containerEl.createDiv({ cls: "anisync-status-card" });
-    const statusRow = statusCard.createDiv({ cls: "anisync-status-row" });
-    statusRow.createDiv({ cls: hasToken ? "anisync-indicator anisync-indicator-ok" : "anisync-indicator anisync-indicator-warn" });
-    const statusText = statusRow.createSpan({ cls: "anisync-status-text" });
+    const card = containerEl.createDiv({ cls: "anisync-status-card" });
+    const row = card.createDiv({ cls: "anisync-status-row" });
+    row.createDiv({ cls: hasToken ? "anisync-indicator anisync-indicator-ok" : "anisync-indicator anisync-indicator-warn" });
+    const text = row.createSpan({ cls: "anisync-status-text" });
 
     if (hasToken && s.anilistUsername) {
-      statusText.setText("Connected as @" + s.anilistUsername);
+      text.setText("Connected as @" + s.anilistUsername);
     } else if (hasToken) {
-      statusText.setText("Connected (verifying...)");
+      text.setText("Connected (verifying...)");
     } else {
-      statusText.setText("Not connected");
+      text.setText("Not connected");
     }
 
-    const descEl = statusCard.createDiv({ cls: "setting-item-description" });
-    descEl.setText(hasToken
-      ? "Your AniList account is linked."
-      : "Connect your AniList account to start syncing.");
+    card.createDiv({ cls: "setting-item-description" })
+      .setText(hasToken ? "Your AniList account is linked." : "Connect your AniList account to start syncing.");
   }
 
   private renderSyncSection(containerEl: HTMLElement): void {
@@ -87,15 +87,12 @@ export class AnisyncSettingTab extends PluginSettingTab {
 
     if (s.lastSyncAt) {
       const dt = new Date(s.lastSyncAt);
-      const timeAgo = this.getTimeAgo(dt);
-      const statsEl = containerEl.createDiv({ cls: "anisync-last-sync" });
-      const labelEl = statsEl.createSpan({ cls: "anisync-last-sync-label" });
-      labelEl.setText("Last sync: ");
-      const timeEl = statsEl.createSpan({ cls: "anisync-last-sync-time" });
-      timeEl.setText(timeAgo + " ago");
+      const ago = this.getTimeAgo(dt);
+      const el = containerEl.createDiv({ cls: "anisync-last-sync" });
+      el.createSpan({ cls: "anisync-last-sync-label" }).setText("Last sync: ");
+      el.createSpan({ cls: "anisync-last-sync-time" }).setText(ago + " ago");
       if (s.lastSyncStats) {
-        const statsText = statsEl.createDiv({ cls: "anisync-last-sync-stats" });
-        statsText.setText(s.lastSyncStats);
+        el.createDiv({ cls: "anisync-last-sync-stats" }).setText(s.lastSyncStats);
       }
     }
 
@@ -163,7 +160,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
           if (value) {
             this.plugin.startAutoSync();
-            new Notice("Auto-sync enabled (every " + s.pollIntervalMinutes + " minutes)", 3000);
+            new Notice("Auto-sync enabled (every " + s.pollIntervalSeconds + "s)", 3000);
           } else {
             this.plugin.stopAutoSync();
             new Notice("Auto-sync disabled", 3000);
@@ -172,15 +169,15 @@ export class AnisyncSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Sync interval")
-      .setDesc("How often to check for updates (minimum 5 minutes).")
+      .setName("Sync interval (seconds)")
+      .setDesc("How often to check for updates (minimum 30 seconds).")
       .addText((text) =>
         text
           .setPlaceholder("30")
-          .setValue(String(s.pollIntervalMinutes))
+          .setValue(String(s.pollIntervalSeconds))
           .onChange(async (value) => {
             const n = parseInt(value, 10);
-            s.pollIntervalMinutes = Number.isFinite(n) && n >= 5 ? n : 30;
+            s.pollIntervalSeconds = Number.isFinite(n) && n >= 30 ? n : 30;
             await this.plugin.saveSettings();
             if (s.enableAutoSync) {
               this.plugin.startAutoSync();
@@ -220,8 +217,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
   }
 
   private getTimeAgo(date: Date): string {
-    const now = new Date();
-    const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+    const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
     if (seconds < 60) return "just now";
     if (seconds < 3600) return Math.floor(seconds / 60) + " minutes";
     if (seconds < 86400) return Math.floor(seconds / 3600) + " hours";

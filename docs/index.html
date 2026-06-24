@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ani-sync — Authorize</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="card" id="state-redirect">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <h1>Ani-sync</h1>
+      </div>
+      <p class="lede" id="msg-redirect">Connecting your AniList account to Ani-sync&hellip;</p>
+      <div class="loader" aria-hidden="true"></div>
+    </main>
+
+    <main class="card hidden" id="state-success">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <h1>Ani-sync</h1>
+      </div>
+      <p class="lede success-mark">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 6 9 17l-5-5" />
+        </svg>
+        Ani-sync is now connected to AniList.
+      </p>
+      <p class="hint">You can close this tab and return to Obsidian.</p>
+    </main>
+
+    <main class="card hidden" id="state-error">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <h1>Ani-sync</h1>
+      </div>
+      <p class="lede error-mark" id="msg-error">Something went wrong.</p>
+      <p class="hint">Close this tab and try again from Ani-sync's settings.</p>
+    </main>
+
+    <script src="script.js"></script>
+  </body>
+</html>

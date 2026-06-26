@@ -1,7 +1,6 @@
 import { normalizePath } from "obsidian";
 import type { AnilistClient } from "../anilist/client";
 import {
-  collectUniqueMediaFromFull,
   flattenSummaryToMap,
 } from "../anilist/queries";
 import type { MediaDetail, MediaList } from "../types";
@@ -94,7 +93,17 @@ export class SyncEngine {
       return idleStats;
     }
 
-    onProgress("Fetching full lists for changed entries...");
+    if (changed.length === 0 && removed.length > 0) {
+      onProgress(`Only removals detected (${removed.length}). Skipping list fetches...`);
+      const removalStats: SyncStats = { created: 0, updated: 0, skipped: 0, failed: 0, planned: 0 };
+      await this.handleRemovals(removed, removalStats);
+      const detailsMap = new Map(Object.entries(this.cache?.details ?? {}));
+      for (const k of removed) detailsMap.delete(k);
+      await this.updateCache(newSummary, detailsMap);
+      return removalStats;
+    }
+
+    onProgress(`Fetching full lists for ${changed.length} changed entry/entries...`);
     const [fullAnimeLists, fullMangaLists] = await Promise.all([
       this.anilist.fetchFullList("ANIME", this.username),
       this.anilist.fetchFullList("MANGA", this.username),
@@ -112,10 +121,14 @@ export class SyncEngine {
     }
     onProgress(`Reusing ${details.size} cached details`);
 
-    const toFetch = collectUniqueMediaFromFull(
-      { lists: fullAnimeLists },
-      { lists: fullMangaLists },
-    ).filter((m) => changed.includes(`${m.type}:${m.id}`));
+    const toFetch: { id: number; type: "ANIME" | "MANGA"; title: string }[] = [];
+    for (const key of changed) {
+      const [type, idStr] = key.split(":");
+      const id = Number(idStr);
+      if (type && (type === "ANIME" || type === "MANGA") && Number.isFinite(id) && !details.has(key)) {
+        toFetch.push({ id, type, title: key });
+      }
+    }
     onProgress(`Fetching ${toFetch.length} new/changed detail(s) in batch...`);
 
     const byType: { ANIME: number[]; MANGA: number[] } = { ANIME: [], MANGA: [] };
@@ -136,13 +149,6 @@ export class SyncEngine {
     for (const m of fetchedAnime) if (m) details.set(`ANIME:${m.id}`, m);
     for (const m of fetchedManga) if (m) details.set(`MANGA:${m.id}`, m);
 
-    const missing = toFetch.filter((m) => !details.has(`${m.type}:${m.id}`));
-    if (missing.length) {
-      onProgress(`  ! ${missing.length} detail(s) could not be fetched`);
-      for (const m of missing) {
-        onProgress(`    - ${m.type}:${m.id} (${m.title})`);
-      }
-    }
     onProgress(`Detail fetch complete: ${details.size} total`);
 
     if (this.cancelled) return this.cancelledStats();

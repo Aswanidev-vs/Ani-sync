@@ -16,13 +16,56 @@ interface AnisyncData {
   cache: AnisyncCache;
 }
 
+class SyncProgressPopup {
+  private el: HTMLDivElement | null = null;
+  private fill: HTMLDivElement | null = null;
+  private label: HTMLDivElement | null = null;
+  private lastUpdate = 0;
+
+  show(message: string, percent: number): void {
+    const now = Date.now();
+    if (percent < 100 && now - this.lastUpdate < 150) return;
+    this.lastUpdate = now;
+
+    if (!this.el) {
+      this.el = document.createElement("div");
+      this.el.className = "anisync-progress-popup";
+      this.fill = document.createElement("div");
+      this.fill.className = "anisync-progress-fill";
+      this.label = document.createElement("div");
+      this.label.className = "anisync-progress-text";
+      this.el.appendChild(this.fill);
+      this.el.appendChild(this.label);
+      document.body.appendChild(this.el);
+    }
+    this.el.style.display = "block";
+    if (this.fill) this.fill.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+    if (this.label) this.label.setText(message);
+  }
+
+  hide(): void {
+    if (this.el) {
+      this.el.style.display = "none";
+      if (this.fill) this.fill.style.width = "0%";
+    }
+    this.lastUpdate = 0;
+  }
+
+  destroy(): void {
+    if (this.el) {
+      this.el.remove();
+      this.el = null;
+    }
+  }
+}
+
 export default class AnisyncPlugin extends Plugin {
   settings: AnisyncSettings = { ...DEFAULT_SETTINGS };
-  isSyncing = false;
   private cache: AnisyncCache = emptyCache();
   private syncEngine: SyncEngine | null = null;
   private syncIntervalId: number | null = null;
   private settingTab: AnisyncSettingTab | null = null;
+  private syncPopup = new SyncProgressPopup();
 
   async onload(): Promise<void> {
     await this.loadAll();
@@ -80,6 +123,7 @@ export default class AnisyncPlugin extends Plugin {
   onunload(): void {
     this.syncEngine?.cancel();
     this.stopAutoSync();
+    this.syncPopup.destroy();
   }
 
   async loadAll(): Promise<void> {
@@ -162,12 +206,11 @@ export default class AnisyncPlugin extends Plugin {
       return;
     }
 
-    this.isSyncing = true;
-    this.settingTab?.showSyncProgress("Initializing...", 0);
+    this.syncPopup.show("Syncing...", 0);
 
     const client = new AnilistClient(this.settings.anilistToken, {
       onRetry: ({ attempt, waitMs, reason }) => {
-        this.settingTab?.showSyncProgress(`Retrying in ${Math.round(waitMs / 1000)}s (${reason})...`, 10);
+        this.syncPopup.show(`Retrying in ${Math.round(waitMs / 1000)}s (${reason})...`, 10);
       },
     });
     const vault = this.buildVaultAdapter();
@@ -188,7 +231,7 @@ export default class AnisyncPlugin extends Plugin {
       cache: this.cache,
       onLog: () => {},
       onProgress: (m) => {
-        this.settingTab?.showSyncProgress(m, this.estimateProgress(m));
+        this.syncPopup.show(m, this.estimateProgress(m));
       },
     });
 
@@ -197,17 +240,16 @@ export default class AnisyncPlugin extends Plugin {
       this.settings.lastSyncAt = new Date().toISOString();
       this.settings.lastSyncStats = `${stats.created} created, ${stats.updated} updated, ${stats.skipped} unchanged, ${stats.failed} failed`;
       await this.saveAll();
-      this.settingTab?.showSyncProgress("Sync complete!", 100);
-      setTimeout(() => this.settingTab?.hideSyncProgress(), 1500);
+      this.syncPopup.show("Sync complete!", 100);
+      setTimeout(() => this.syncPopup.hide(), 2000);
       new Notice(`Ani-sync: done — ${stats.created} created, ${stats.updated} updated, ${stats.skipped} skipped, ${stats.failed} failed`, 6000);
     } catch (e) {
       const msg = (e as Error)?.message ?? String(e);
-      this.settingTab?.showSyncProgress(`Failed: ${msg}`, 100);
-      setTimeout(() => this.settingTab?.hideSyncProgress(), 3000);
+      this.syncPopup.show(`Failed: ${msg}`, 100);
+      setTimeout(() => this.syncPopup.hide(), 3000);
       new Notice(`Ani-sync sync failed: ${msg}`, 10000);
     } finally {
       this.syncEngine = null;
-      this.isSyncing = false;
     }
   }
 

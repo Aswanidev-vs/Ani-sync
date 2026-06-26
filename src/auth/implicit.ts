@@ -31,11 +31,9 @@ export async function probeAnilistConnection(plugin: AnisyncPlugin): Promise<voi
     const viewer = await client.fetchViewer();
     plugin.settings.anilistUsername = viewer.name;
     await plugin.saveAll();
-    plugin.refreshSettingsTab();
     new Notice("Connected as @" + viewer.name + "!", 4000);
   } catch (e) {
     const msg = (e as Error)?.message ?? String(e);
-    plugin.refreshSettingsTab();
     new Notice("Connection failed: " + msg, 8000);
   }
 }

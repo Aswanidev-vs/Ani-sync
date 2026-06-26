@@ -3,10 +3,6 @@ import type AnisyncPlugin from "./main";
 
 export class AnisyncSettingTab extends PluginSettingTab {
   private plugin: AnisyncPlugin;
-  private progressEl: HTMLDivElement | null = null;
-  private progressFill: HTMLDivElement | null = null;
-  private progressLabel: HTMLDivElement | null = null;
-  private lastProgressUpdate = 0;
 
   constructor(app: App, plugin: AnisyncPlugin) {
     super(app, plugin);
@@ -23,38 +19,9 @@ export class AnisyncSettingTab extends PluginSettingTab {
       cls: "setting-item-description",
     });
 
-    this.renderProgressBar(containerEl);
     this.renderOAuthSection(containerEl);
     this.renderSyncSection(containerEl);
     this.renderActionsSection(containerEl);
-  }
-
-  showSyncProgress(message: string, percent: number): void {
-    const now = Date.now();
-    if (now - this.lastProgressUpdate < 200) return;
-    this.lastProgressUpdate = now;
-
-    if (!this.progressEl || !this.progressFill || !this.progressLabel) return;
-    this.progressEl.style.display = "block";
-    this.progressFill.style.width = `${Math.min(100, Math.max(0, percent))}%`;
-    this.progressLabel.setText(message);
-  }
-
-  hideSyncProgress(): void {
-    if (!this.progressEl || !this.progressFill || !this.progressLabel) return;
-    this.progressEl.style.display = "none";
-    this.progressFill.style.width = "0%";
-    this.progressLabel.setText("");
-  }
-
-  private renderProgressBar(containerEl: HTMLElement): void {
-    const wrap = containerEl.createDiv({ cls: "anisync-progress-container" });
-    wrap.style.display = this.plugin.isSyncing ? "block" : "none";
-    this.progressFill = wrap.createDiv({ cls: "anisync-progress-fill" });
-    this.progressFill.style.width = "0%";
-    this.progressLabel = wrap.createDiv({ cls: "anisync-progress-text" });
-    this.progressLabel.setText("");
-    this.progressEl = wrap;
   }
 
   private renderOAuthSection(containerEl: HTMLElement): void {

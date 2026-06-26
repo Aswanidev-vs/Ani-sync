@@ -63,13 +63,18 @@
   color: var(--text-muted);
 }
 
-.anisync-progress-container {
-  background: var(--background-secondary);
+.anisync-progress-popup {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 300px;
+  background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
   padding: 12px 16px;
-  margin-bottom: 16px;
-  overflow: hidden;
+  z-index: 1000;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  display: none;
 }
 
 .anisync-progress-fill {

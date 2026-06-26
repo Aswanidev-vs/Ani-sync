@@ -124,12 +124,12 @@ export class SyncEngine {
     }
     onProgress(`Reusing ${details.size} cached details`);
 
-    const toFetch: { id: number; type: "ANIME" | "MANGA"; title: string }[] = [];
+    const toFetch: { id: number; type: "ANIME" | "MANGA" }[] = [];
     for (const key of changed) {
       const [type, idStr] = key.split(":");
       const id = Number(idStr);
-      if (type && (type === "ANIME" || type === "MANGA") && Number.isFinite(id) && !details.has(key)) {
-        toFetch.push({ id, type, title: key });
+      if ((type === "ANIME" || type === "MANGA") && Number.isFinite(id)) {
+        toFetch.push({ id, type });
       }
     }
     onProgress(`Fetching ${toFetch.length} new/changed detail(s) in batch...`);

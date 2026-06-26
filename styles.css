@@ -68,6 +68,7 @@
   bottom: 24px;
   right: 24px;
   width: 300px;
+  max-width: calc(100vw - 48px);
   background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;

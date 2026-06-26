@@ -97,6 +97,9 @@ export class SyncEngine {
       onProgress(`Only removals detected (${removed.length}). Skipping list fetches...`);
       const removalStats: SyncStats = { created: 0, updated: 0, skipped: 0, failed: 0, planned: 0 };
       await this.handleRemovals(removed, removalStats);
+      if (this.cancelled) {
+        return this.cancelledStats();
+      }
       const detailsMap = new Map(Object.entries(this.cache?.details ?? {}));
       for (const k of removed) detailsMap.delete(k);
       await this.updateCache(newSummary, detailsMap);

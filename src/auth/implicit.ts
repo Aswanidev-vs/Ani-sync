@@ -12,9 +12,11 @@ export async function handleDeepLinkToken(plugin: AnisyncPlugin, token: string):
     new Notice("Invalid token received.", 5000);
     return;
   }
+
   plugin.stopAutoSync();
   plugin.settings.anilistToken = token;
   await plugin.saveAll();
+
   new Notice("Verifying connection...", 3000);
   try {
     await probeAnilistConnection(plugin);
@@ -27,9 +29,9 @@ export async function handleDeepLinkToken(plugin: AnisyncPlugin, token: string):
 }
 
 export async function disconnectAnilist(plugin: AnisyncPlugin): Promise<void> {
+  plugin.stopAutoSync();
   plugin.settings.anilistToken = "";
   plugin.settings.anilistUsername = "";
-  plugin.stopAutoSync();
   await plugin.saveAll();
 }
 
@@ -41,6 +43,12 @@ export async function probeAnilistConnection(plugin: AnisyncPlugin): Promise<voi
     await plugin.saveAll();
     new Notice("Connected as @" + viewer.name + "!", 4000);
   } catch (e) {
+    const status = (e as Error & { status?: number })?.status;
+    if (status === 401 || status === 403) {
+      plugin.settings.anilistToken = "";
+      plugin.settings.anilistUsername = "";
+      await plugin.saveAll();
+    }
     const msg = (e as Error)?.message ?? String(e);
     new Notice("Connection failed: " + msg, 8000);
   }

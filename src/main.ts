@@ -24,7 +24,7 @@ class SyncProgressPopup {
 
   show(message: string, percent: number): void {
     const now = Date.now();
-    if (now - this.lastUpdate < 150) return;
+    if (percent < 100 && now - this.lastUpdate < 150) return;
     this.lastUpdate = now;
 
     if (!this.el) {

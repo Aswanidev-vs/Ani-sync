@@ -12,10 +12,18 @@ export async function handleDeepLinkToken(plugin: AnisyncPlugin, token: string):
     new Notice("Invalid token received.", 5000);
     return;
   }
+  plugin.stopAutoSync();
   plugin.settings.anilistToken = token;
   await plugin.saveAll();
   new Notice("Verifying connection...", 3000);
-  await probeAnilistConnection(plugin);
+  try {
+    await probeAnilistConnection(plugin);
+  } finally {
+    plugin.refreshSettingsTab();
+    if (plugin.settings.enableAutoSync && plugin.canSync()) {
+      plugin.startAutoSync();
+    }
+  }
 }
 
 export async function disconnectAnilist(plugin: AnisyncPlugin): Promise<void> {

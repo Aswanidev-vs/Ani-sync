@@ -1,3 +1,4 @@
+```ts
 import { normalizePath } from "obsidian";
 import type { AnilistClient } from "../anilist/client";
 import {
@@ -152,6 +153,13 @@ export class SyncEngine {
     for (const m of fetchedAnime) if (m) details.set(`ANIME:${m.id}`, m);
     for (const m of fetchedManga) if (m) details.set(`MANGA:${m.id}`, m);
 
+    const missing = toFetch.filter((m) => !details.has(`${m.type}:${m.id}`));
+    if (missing.length) {
+      onProgress(`  ! ${missing.length} detail(s) could not be fetched`);
+      for (const m of missing) {
+        onProgress(`    - ${m.type}:${m.id}`);
+      }
+    }
     onProgress(`Detail fetch complete: ${details.size} total`);
 
     if (this.cancelled) return this.cancelledStats();
@@ -349,3 +357,4 @@ async function pMapLimit<T>(items: T[], limit: number, fn: (item: T, idx: number
   };
   await Promise.all(Array.from({ length: workers }, () => worker()));
 }
+```

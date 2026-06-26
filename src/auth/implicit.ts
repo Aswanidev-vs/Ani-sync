@@ -16,10 +16,13 @@ export async function handleDeepLinkToken(plugin: AnisyncPlugin, token: string):
   plugin.settings.anilistToken = token;
   await plugin.saveAll();
   new Notice("Verifying connection...", 3000);
-  await probeAnilistConnection(plugin);
-  plugin.refreshSettingsTab();
-  if (plugin.settings.enableAutoSync && plugin.canSync()) {
-    plugin.startAutoSync();
+  try {
+    await probeAnilistConnection(plugin);
+  } finally {
+    plugin.refreshSettingsTab();
+    if (plugin.settings.enableAutoSync && plugin.canSync()) {
+      plugin.startAutoSync();
+    }
   }
 }
 

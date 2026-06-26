@@ -45,9 +45,8 @@ export async function probeAnilistConnection(plugin: AnisyncPlugin): Promise<voi
   } catch (e) {
     const status = (e as Error & { status?: number })?.status;
     if (status === 401 || status === 403) {
-      plugin.settings.anilistToken = "";
-      plugin.settings.anilistUsername = "";
-      await plugin.saveAll();
+      await disconnectAnilist(plugin);
+      plugin.refreshSettingsTab();
     }
     const msg = (e as Error)?.message ?? String(e);
     new Notice("Connection failed: " + msg, 8000);

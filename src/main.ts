@@ -1,4 +1,5 @@
-import { Notice, Plugin, TFile } from "obsidian";
+import { Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
+import { ChatView, CHAT_VIEW_TYPE } from "./chat/view";
 import { AnisyncSettings, DEFAULT_SETTINGS } from "./settings";
 import { AnisyncSettingTab } from "./settingsTab";
 import { AnilistClient } from "./anilist/client";
@@ -61,7 +62,7 @@ class SyncProgressPopup {
 
 export default class AnisyncPlugin extends Plugin {
   settings: AnisyncSettings = { ...DEFAULT_SETTINGS };
-  private cache: AnisyncCache = emptyCache();
+  cache: AnisyncCache = emptyCache();
   private syncEngine: SyncEngine | null = null;
   private syncIntervalId: number | null = null;
   private settingTab: AnisyncSettingTab | null = null;
@@ -82,6 +83,10 @@ export default class AnisyncPlugin extends Plugin {
 
     this.addRibbonIcon("database", "Ani-sync: Sync now", () => {
       void this.runSync();
+    });
+
+    this.addRibbonIcon("message-circle", "Ani-sync: Open chat", () => {
+      void this.openChatView();
     });
 
     this.addCommand({
@@ -115,6 +120,16 @@ export default class AnisyncPlugin extends Plugin {
       },
     });
 
+    this.addCommand({
+      id: "open-chat",
+      name: "Open Ani-sync Chat",
+      callback: () => {
+        void this.openChatView();
+      },
+    });
+
+    this.registerView(CHAT_VIEW_TYPE, (leaf: WorkspaceLeaf) => new ChatView(leaf, this));
+
     if (this.settings.enableAutoSync && this.canSync()) {
       this.startAutoSync();
     }
@@ -124,6 +139,7 @@ export default class AnisyncPlugin extends Plugin {
     this.syncEngine?.cancel();
     this.stopAutoSync();
     this.syncPopup.destroy();
+    this.app.workspace.detachLeavesOfType(CHAT_VIEW_TYPE);
   }
 
   async loadAll(): Promise<void> {
@@ -270,6 +286,25 @@ export default class AnisyncPlugin extends Plugin {
     if (msg.includes("No changes")) return 100;
     if (msg.includes("complete")) return 100;
     return 50;
+  }
+
+  getCache(): AnisyncCache {
+    return this.cache;
+  }
+
+  async openChatView(): Promise<void> {
+    const { workspace } = this.app;
+    let leaf = workspace.getLeavesOfType(CHAT_VIEW_TYPE)[0];
+    if (!leaf) {
+      const rightLeaf = workspace.getRightLeaf(false);
+      if (!rightLeaf) {
+        new Notice("Cannot open chat view.", 3000);
+        return;
+      }
+      leaf = rightLeaf;
+      await leaf.setViewState({ type: CHAT_VIEW_TYPE, active: true });
+    }
+    workspace.revealLeaf(leaf);
   }
 
   async clearCache(): Promise<void> {

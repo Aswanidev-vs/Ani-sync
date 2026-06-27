@@ -1,3 +1,5 @@
+import type { OpenRouterModel } from "./openrouter/types";
+
 export interface AnisyncSettings {
   anilistToken: string;
   anilistUsername: string;
@@ -6,6 +8,9 @@ export interface AnisyncSettings {
   enableAutoSync: boolean;
   lastSyncAt: string | null;
   lastSyncStats: string | null;
+  openrouterApiKey: string;
+  openrouterModel: string;
+  openrouterAvailableModels: OpenRouterModel[];
 }
 
 export const DEFAULT_SETTINGS: AnisyncSettings = {
@@ -16,4 +21,7 @@ export const DEFAULT_SETTINGS: AnisyncSettings = {
   enableAutoSync: true,
   lastSyncAt: null,
   lastSyncStats: null,
+  openrouterApiKey: "",
+  openrouterModel: "",
+  openrouterAvailableModels: [],
 };

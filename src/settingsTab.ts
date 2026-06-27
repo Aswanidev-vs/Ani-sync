@@ -1,5 +1,6 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type AnisyncPlugin from "./main";
+import { fetchModels } from "./openrouter/client";
 
 export class AnisyncSettingTab extends PluginSettingTab {
   private plugin: AnisyncPlugin;
@@ -21,6 +22,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
 
     this.renderOAuthSection(containerEl);
     this.renderSyncSection(containerEl);
+    this.renderOpenRouterSection(containerEl);
     this.renderActionsSection(containerEl);
   }
 
@@ -150,6 +152,86 @@ export class AnisyncSettingTab extends PluginSettingTab {
               this.plugin.startAutoSync();
             }
           }),
+      );
+  }
+
+  private renderOpenRouterSection(containerEl: HTMLElement): void {
+    const s = this.plugin.settings;
+
+    containerEl.createEl("h3", { text: "OpenRouter AI" });
+    containerEl.createEl("p", {
+      text: "Configure an OpenRouter API key to enable the AI chat sidebar.",
+      cls: "setting-item-description",
+    });
+
+    new Setting(containerEl)
+      .setName("API key")
+      .setDesc("Your OpenRouter API key. Stored locally in your vault settings.")
+      .addText((text) => {
+        text
+          .setPlaceholder("sk-or-v1-...")
+          .setValue(s.openrouterApiKey)
+          .onChange(async (value) => {
+            s.openrouterApiKey = value;
+            await this.plugin.saveSettings();
+          });
+        text.inputEl.type = "password";
+      });
+
+    const modelSetting = new Setting(containerEl)
+      .setName("Model")
+      .setDesc("Select an OpenRouter model for chat.")
+      .addDropdown((dropdown) => {
+        const models = s.openrouterAvailableModels;
+        if (models.length > 0) {
+          for (const m of models) {
+            const label = m.isFree ? `[Free] ${m.name}` : m.name;
+            dropdown.addOption(m.id, label);
+          }
+          if (s.openrouterModel) {
+            dropdown.setValue(s.openrouterModel);
+          } else {
+            dropdown.setValue(models[0].id);
+            s.openrouterModel = models[0].id;
+          }
+        } else {
+          dropdown.addOption("", "No models — fetch first");
+        }
+        dropdown.onChange(async (value) => {
+          s.openrouterModel = value;
+          await this.plugin.saveSettings();
+        });
+        return dropdown;
+      });
+
+    new Setting(containerEl)
+      .setName("Fetch available models")
+      .setDesc("Retrieve the list of models from OpenRouter. Free models are tagged.")
+      .addButton((btn) =>
+        btn.setButtonText("Fetch models").setCta().onClick(async () => {
+          if (!s.openrouterApiKey) {
+            new Notice("Enter and save an API key first.", 4000);
+            return;
+          }
+          btn.setDisabled(true);
+          btn.setButtonText("Fetching...");
+          try {
+            const models = await fetchModels(s.openrouterApiKey);
+            s.openrouterAvailableModels = models;
+            if (models.length > 0 && !s.openrouterModel) {
+              s.openrouterModel = models[0].id;
+            }
+            await this.plugin.saveSettings();
+            this.display();
+            new Notice(`Fetched ${models.length} models (${models.filter((m) => m.isFree).length} free).`, 4000);
+          } catch (err) {
+            const msg = (err as Error)?.message ?? String(err);
+            new Notice(`Failed to fetch models: ${msg}`, 6000);
+          } finally {
+            btn.setDisabled(false);
+            btn.setButtonText("Fetch models");
+          }
+        }),
       );
   }
 

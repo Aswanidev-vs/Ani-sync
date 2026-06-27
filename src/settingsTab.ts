@@ -22,6 +22,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
 
     this.renderOAuthSection(containerEl);
     this.renderSyncSection(containerEl);
+    this.renderSyncSettingsSection(containerEl);
     this.renderOpenRouterSection(containerEl);
     this.renderActionsSection(containerEl);
   }
@@ -65,18 +66,16 @@ export class AnisyncSettingTab extends PluginSettingTab {
       }
     }
 
-    new Setting(containerEl)
-      .setName("AniList username")
-      .setDesc("Your AniList username. Required for syncing.")
-      .addText((text) =>
-        text
-          .setPlaceholder("your-username")
-          .setValue(s.anilistUsername)
-          .onChange(async (value) => {
-            s.anilistUsername = value.trim();
-            await this.plugin.saveSettings();
-          }),
-      );
+    if (s.anilistToken) {
+      new Setting(containerEl)
+        .setName("AniList username")
+        .setDesc("Auto-detected from your AniList account.")
+        .addText((text) =>
+          text
+            .setValue(s.anilistUsername)
+            .setDisabled(true),
+        );
+    }
 
     if (!s.anilistToken) {
       new Setting(containerEl)
@@ -106,6 +105,11 @@ export class AnisyncSettingTab extends PluginSettingTab {
             }),
         );
     }
+
+  }
+
+  private renderSyncSettingsSection(containerEl: HTMLElement): void {
+    const s = this.plugin.settings;
 
     new Setting(containerEl)
       .setName("Output folder")

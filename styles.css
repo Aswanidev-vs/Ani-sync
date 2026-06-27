@@ -95,6 +95,14 @@
   text-overflow: ellipsis;
 }
 
+@media (pointer: coarse), (max-width: 768px) {
+  .anisync-progress-popup {
+    bottom: auto;
+    top: 24px;
+    right: auto;
+    left: 50%;
+    transform: translateX(-50%);
+  }
 /* Chat view */
 .anisync-chat-container {
   display: flex;

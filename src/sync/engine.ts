@@ -3,7 +3,7 @@ import type { AnilistClient } from "../anilist/client";
 import {
   flattenSummaryToMap,
 } from "../anilist/queries";
-import type { MediaDetail, MediaList } from "../types";
+import type { AnilistCharacterEdge, MediaDetail, MediaList } from "../types";
 import { buildAll, buildArtifacts, SYNCED_AT_PLACEHOLDER } from "../notes/builder";
 import { extractHashMarker, stripHashMarker, sha256Hex } from "./hash";
 import { AnisyncCache, diffSummary } from "./cache";
@@ -12,6 +12,7 @@ export interface VaultAdapter {
   read(path: string): Promise<string | null>;
   write(path: string, content: string): Promise<void>;
   delete(path: string): Promise<void>;
+  exists(path: string): Promise<boolean>;
 }
 
 export interface CacheStore {
@@ -27,7 +28,7 @@ export interface SyncEngineDeps {
   username: string;
   cache: AnisyncCache;
   onLog?: (message: string) => void;
-  onProgress?: (message: string) => void;
+  onProgress?: (message: string, percent?: number) => void;
 }
 
 export interface SyncStats {
@@ -50,7 +51,7 @@ export class SyncEngine {
   private username: string;
   private cache: AnisyncCache;
   private onLog?: (message: string) => void;
-  private onProgress?: (message: string) => void;
+  private onProgress?: (message: string, percent?: number) => void;
   private cancelled = false;
   private syncedAt: string;
 
@@ -67,14 +68,20 @@ export class SyncEngine {
   }
 
   async run(): Promise<SyncStats> {
-    const onProgress = (m: string) => this.onProgress?.(m);
+    const onProgress = (m: string, p?: number) => this.onProgress?.(m, p);
 
-    onProgress("Fetching viewer + summary...");
+    onProgress("Fetching viewer + summary...", 2);
     const [viewer, summary] = await Promise.all([
       this.anilist.fetchViewer(),
       this.anilist.fetchSummary(this.username),
     ]);
-    onProgress(`Viewer: @${viewer.name} (id ${viewer.id})`);
+    onProgress(`Viewer: @${viewer.name} (id ${viewer.id})`, 5);
+
+    const outputExists = await this.vault.exists(this.outputDir);
+    if (!outputExists) {
+      onProgress("Output directory missing — forcing full re-sync");
+      this.cache = { version: 1, summary: {}, details: {}, noteHashes: {}, paths: {} };
+    }
 
     const newSummary = flattenSummaryToMap(
       { lists: summary.animeLists },
@@ -83,10 +90,10 @@ export class SyncEngine {
     const oldSummary = this.cache?.summary ?? {};
     const diff = diffSummary(oldSummary, newSummary);
     const { changed, removed, unchanged } = diff;
-    onProgress(`Summary: ${changed.length} changed, ${removed.length} removed, ${unchanged.length} unchanged`);
+    onProgress(`Summary: ${changed.length} changed, ${removed.length} removed, ${unchanged.length} unchanged`, 5);
 
     if (changed.length === 0 && removed.length === 0) {
-      onProgress("No changes detected. Cache-only update, skipping list fetches and writes.");
+      onProgress("No changes detected. Cache-only update, skipping list fetches and writes.", 100);
       const idleStats: SyncStats = { created: 0, updated: 0, skipped: unchanged.length, failed: 0, planned: 0 };
       const detailsMap = new Map(Object.entries(this.cache?.details ?? {}));
       await this.updateCache(newSummary, detailsMap);
@@ -94,7 +101,7 @@ export class SyncEngine {
     }
 
     if (changed.length === 0 && removed.length > 0) {
-      onProgress(`Only removals detected (${removed.length}). Skipping list fetches...`);
+      onProgress(`Only removals detected (${removed.length}). Skipping list fetches...`, 10);
       const removalStats: SyncStats = { created: 0, updated: 0, skipped: 0, failed: 0, planned: 0 };
       await this.handleRemovals(removed, removalStats);
       if (this.cancelled) {
@@ -103,16 +110,19 @@ export class SyncEngine {
       const detailsMap = new Map(Object.entries(this.cache?.details ?? {}));
       for (const k of removed) detailsMap.delete(k);
       await this.updateCache(newSummary, detailsMap);
+      onProgress("Done", 100);
       return removalStats;
     }
 
-    onProgress(`Fetching full lists for ${changed.length} changed entry/entries...`);
+    onProgress(`Fetching full lists for ${changed.length} changed entry/entries...`, 7);
     const [fullAnimeLists, fullMangaLists] = await Promise.all([
       this.anilist.fetchFullList("ANIME", this.username),
       this.anilist.fetchFullList("MANGA", this.username),
     ]);
-    onProgress(`  anime lists: ${countEntries(fullAnimeLists)} entries`);
-    onProgress(`  manga lists: ${countEntries(fullMangaLists)} entries`);
+    const animeCount = countEntries(fullAnimeLists);
+    const mangaCount = countEntries(fullMangaLists);
+    const totalEntries = animeCount + mangaCount;
+    onProgress(`anime: ${animeCount} / manga: ${mangaCount} entries`, 10);
 
     if (this.cancelled) return this.cancelledStats();
 
@@ -122,7 +132,7 @@ export class SyncEngine {
         details.set(k, this.cache.details[k]);
       }
     }
-    onProgress(`Reusing ${details.size} cached details`);
+    onProgress(`Reusing ${details.size}/${totalEntries} cached details`, 10 + (details.size / totalEntries) * 20);
 
     const toFetch: { id: number; type: "ANIME" | "MANGA" }[] = [];
     for (const key of changed) {
@@ -132,7 +142,7 @@ export class SyncEngine {
         toFetch.push({ id, type });
       }
     }
-    onProgress(`Fetching ${toFetch.length} new/changed detail(s) in batch...`);
+    onProgress(`Fetching ${toFetch.length} new/changed detail(s) in batch...`, 30);
 
     const byType: { ANIME: number[]; MANGA: number[] } = { ANIME: [], MANGA: [] };
     for (const m of toFetch) {
@@ -152,6 +162,19 @@ export class SyncEngine {
     for (const m of fetchedAnime) if (m) details.set(`ANIME:${m.id}`, m);
     for (const m of fetchedManga) if (m) details.set(`MANGA:${m.id}`, m);
 
+    const allFetched = [...fetchedAnime, ...fetchedManga].filter(Boolean) as MediaDetail[];
+    if (allFetched.length > 0) {
+      onProgress(`Fetching all characters for ${allFetched.length} media...`, 32);
+      let charTotal = 0;
+      await pMapLimit(allFetched, 4, async (m) => {
+        if (this.cancelled) return;
+        const edges = await this.anilist.fetchAllCharacters(m.id, m.type);
+        m.characters = { edges };
+        charTotal += edges.length;
+      });
+      onProgress(`Characters fetched: ${charTotal} total`, 35);
+    }
+
     const missing = toFetch.filter((m) => !details.has(`${m.type}:${m.id}`));
     if (missing.length) {
       onProgress(`  ! ${missing.length} detail(s) could not be fetched`);
@@ -159,26 +182,32 @@ export class SyncEngine {
         onProgress(`    - ${m.type}:${m.id}`);
       }
     }
-    onProgress(`Detail fetch complete: ${details.size} total`);
+    onProgress(`Detail fetch complete: ${details.size} total`, 50);
 
     if (this.cancelled) return this.cancelledStats();
 
     const built = buildAll(viewer, fullAnimeLists, fullMangaLists, details);
     const artifacts = buildArtifacts(built, this.syncedAt);
-    onProgress(`Artifacts planned: ${artifacts.length}`);
+    const totalFiles = artifacts.length;
+    const totalFolders = new Set(artifacts.map(a => a.folder)).size;
+    onProgress(`Artifacts planned: ${totalFiles} files, ${totalFolders} folders`, 55);
 
-    onProgress("Pre-computing hashes...");
+    onProgress("Pre-computing hashes...", 57);
     const prepared = await this.prepareArtifacts(artifacts);
-    onProgress(`Hashes computed: ${prepared.length}`);
+    onProgress(`Hashes computed: ${prepared.length}`, 60);
 
     if (this.cancelled) return this.cancelledStats();
 
-    const stats = await this.writeArtifacts(prepared);
+    const stats = await this.writeArtifacts(prepared, totalFolders, (filesDone, totalF, foldersDone) => {
+      onProgress(`${filesDone}/${totalF} files (${foldersDone}/${totalFolders} folders)`, 60 + Math.round((filesDone / totalF) * 30));
+    });
 
     if (this.cancelled) return stats;
 
+    onProgress(`Removing ${removed.length} obsolete note(s)...`, 92);
     await this.handleRemovals(removed, stats);
 
+    onProgress("Updating cache...", 95);
     await this.updateCache(newSummary, details);
 
     return stats;
@@ -203,7 +232,11 @@ export class SyncEngine {
     return stamped;
   }
 
-  private async writeArtifacts(prepared: PreparedArtifact[]): Promise<SyncStats> {
+  private async writeArtifacts(
+    prepared: PreparedArtifact[],
+    totalFolders: number,
+    onWriteProgress?: (filesDone: number, totalFiles: number, foldersDone: number) => void,
+  ): Promise<SyncStats> {
     const stats: SyncStats = { created: 0, updated: 0, skipped: 0, failed: 0, planned: prepared.length };
     const noteHashes = { ...(this.cache?.noteHashes ?? {}) };
     const paths = this.cache?.paths ?? {};
@@ -233,6 +266,8 @@ export class SyncEngine {
       resolved.push({ p, vaultPath });
     }
 
+    let writtenCount = 0;
+    const foldersWithWrites = new Set<string>();
     await pMapLimit(resolved, WRITE_CONCURRENCY, async ({ p, vaultPath }) => {
       if (this.cancelled) return;
       const a = p.artifact;
@@ -272,9 +307,16 @@ export class SyncEngine {
       } catch (e) {
         stats.failed += 1;
         this.onLog?.(`  ! write failed for ${vaultPath}: ${(e as Error)?.message ?? e}`);
+      } finally {
+        writtenCount += 1;
+        foldersWithWrites.add(a.folder);
+        if (onWriteProgress && writtenCount % 50 === 0) {
+          onWriteProgress(writtenCount, prepared.length, foldersWithWrites.size);
+        }
       }
     });
 
+    onWriteProgress?.(prepared.length, prepared.length, foldersWithWrites.size);
     this.cache = { ...(this.cache ?? {}), noteHashes, paths: newPaths };
     return stats;
   }

@@ -2,6 +2,7 @@ import { ItemView, WorkspaceLeaf, MarkdownRenderer, MarkdownView } from "obsidia
 import type AnisyncPlugin from "../main";
 import { VaultContext } from "./vaultContext";
 import { sendChatStream } from "../openrouter/client";
+import { LOGO_DATA_URL } from "./logo";
 
 export const CHAT_VIEW_TYPE = "ani-sync-chat-view";
 
@@ -87,8 +88,18 @@ export class ChatView extends ItemView {
 
   private showWelcome(): void {
     this.messagesEl.empty();
-    const welcome = this.messagesEl.createDiv({ cls: "anisync-chat-welcome" });
-    welcome.setText("Ask about your AniList library — media, staff, studios, and more.");
+    this.messagesEl.style.backgroundImage = `url(${LOGO_DATA_URL})`;
+    this.messagesEl.style.backgroundRepeat = "no-repeat";
+    this.messagesEl.style.backgroundPosition = "center 40px";
+    this.messagesEl.style.backgroundSize = "120px auto";
+    this.messagesEl.style.opacity = "1";
+
+    const username = this.plugin.settings.anilistUsername;
+    const text = username ? `Search anime, ${username}` : "Search anime";
+
+    const msg = this.messagesEl.createDiv({ cls: "anisync-chat-welcome" });
+    msg.style.cssText = "text-align: center; padding: 180px 16px 32px; font-family: 'Anthropic Sans', sans-serif; font-size: 18px; color: var(--text-muted);";
+    msg.setText(text);
   }
 
   private async handleSend(): Promise<void> {
@@ -229,6 +240,7 @@ export class ChatView extends ItemView {
   private addMessage(role: "user" | "assistant", content: string): HTMLDivElement {
     if (this.messagesEl.querySelector(".anisync-chat-welcome")) {
       this.messagesEl.empty();
+      this.messagesEl.style.backgroundImage = "none";
     }
 
     const msg = this.messagesEl.createDiv({
@@ -271,5 +283,10 @@ export class ChatView extends ItemView {
 
   clearConversation(): void {
     this.showWelcome();
+  }
+
+  invalidateVaultContext(): void {
+    this.vaultContext?.invalidate();
+    this.vaultContext = null;
   }
 }

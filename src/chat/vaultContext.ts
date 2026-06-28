@@ -1,5 +1,5 @@
 import { TFile } from "obsidian";
-import type { App } from "obsidian";
+import type { App, CachedMetadata } from "obsidian";
 
 export interface VaultNode {
   id: string;
@@ -39,11 +39,31 @@ export class VaultContext {
     if (!folder) return;
 
     const files = this.getAllMarkdownFiles(folder);
+    const cache = this.app.metadataCache;
     for (const file of files) {
-      const node = await this.parseFile(file);
-      if (node) this.nodes.push(node);
+      const meta = cache.getFileCache(file);
+      const fm = meta?.frontmatter;
+      if (!fm?.anilistId) continue;
+
+      const type = fm.type as string;
+      const normalizedType = TYPE_MAP[type] ?? type.toLowerCase() as VaultNode["type"];
+      const title = this.extractTitle(fm, meta?.headings);
+
+      this.nodes.push({
+        id: `${normalizedType}:${fm.anilistId}`,
+        type: normalizedType as VaultNode["type"],
+        title,
+        frontmatter: fm as Record<string, unknown>,
+        body: "",
+        path: file.path,
+      });
     }
     this.loaded = true;
+  }
+
+  invalidate(): void {
+    this.nodes = [];
+    this.loaded = false;
   }
 
   private getAllMarkdownFiles(folder: any): TFile[] {
@@ -59,96 +79,17 @@ export class VaultContext {
     return files;
   }
 
-  private async parseFile(file: TFile): Promise<VaultNode | null> {
-    try {
-      const content = await this.app.vault.read(file);
-      const { frontmatter, body } = this.parseFrontmatter(content);
-      if (!frontmatter?.anilistId) return null;
-
-      const type = frontmatter.type as string;
-      const normalizedType = TYPE_MAP[type] ?? type.toLowerCase() as VaultNode["type"];
-      const id = `${normalizedType}:${frontmatter.anilistId}`;
-      const title = this.extractTitle(frontmatter, body);
-
-      return { id, type: normalizedType as VaultNode["type"], title, frontmatter, body, path: file.path };
-    } catch (e) {
-      console.error("[VaultContext] Failed to parse", file.path, e);
-      return null;
-    }
-  }
-
-  private parseFrontmatter(content: string): { frontmatter: Record<string, unknown>; body: string } {
-    const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-    if (!match) return { frontmatter: {}, body: content };
-    const fm: Record<string, unknown> = {};
-    let currentParent: string | null = null;
-    let currentObj: Record<string, unknown> | null = null;
-
-    for (const line of match[1].split(/\r?\n/)) {
-      // Skip empty lines
-      if (!line.trim()) continue;
-
-      // Check if line is indented (nested key)
-      const indentMatch = line.match(/^(\s+)(\S.*)/);
-      if (indentMatch && currentParent && currentObj) {
-        const nested = indentMatch[2];
-        const colonIdx = nested.indexOf(":");
-        if (colonIdx > 0) {
-          const key = nested.slice(0, colonIdx).trim();
-          let value: unknown = nested.slice(colonIdx + 1).trim();
-          if (typeof value === "string") {
-            const v = value as string;
-            if (v.startsWith("'") && v.endsWith("'")) value = v.slice(1, -1);
-            else if (v.startsWith('"') && v.endsWith('"')) value = v.slice(1, -1);
-            else if (v === "true") value = true;
-            else if (v === "false") value = false;
-            else if (/^-?\d+$/.test(v)) value = Number(v);
-          }
-          currentObj[key] = value;
-        }
-        continue;
-      }
-
-      // Top-level key
-      const colonIdx = line.indexOf(":");
-      if (colonIdx > 0) {
-        const key = line.slice(0, colonIdx).trim();
-        let value: unknown = line.slice(colonIdx + 1).trim();
-
-        // If value is empty, this might be a parent for nested keys
-        if (value === "") {
-          currentParent = key;
-          currentObj = {};
-          fm[key] = currentObj;
-          continue;
-        }
-
-        // Reset parent tracking
-        currentParent = null;
-        currentObj = null;
-
-        if (typeof value === "string") {
-          const v = value as string;
-          if (v.startsWith("'") && v.endsWith("'")) value = v.slice(1, -1);
-          else if (v.startsWith('"') && v.endsWith('"')) value = v.slice(1, -1);
-          else if (v === "true") value = true;
-          else if (v === "false") value = false;
-          else if (/^-?\d+$/.test(v)) value = Number(v);
-        }
-        fm[key] = value;
-      }
-    }
-    const body = content.slice(match[0].length).trim();
-    return { frontmatter: fm, body };
-  }
-
-  private extractTitle(fm: Record<string, unknown>, body: string): string {
+  private extractTitle(fm: Record<string, unknown>, headings?: { heading: string; level: number }[] | null): string {
     if (fm.title) {
       const t = fm.title as Record<string, unknown>;
       return (t.romaji as string) || (t.english as string) || (t.native as string) || String(fm.anilistId);
     }
-    const h1 = body.match(/^#\s+(.+)/m);
-    return h1 ? h1[1] : String(fm.anilistId);
+    if (headings) {
+      const h1 = headings.find(h => h.level === 1);
+      if (h1) return h1.heading;
+    }
+    const name = fm.name as string;
+    return name || String(fm.anilistId);
   }
 
   getLoadedCount(): number {
@@ -310,7 +251,7 @@ export class VaultContext {
     );
   }
 
-  buildPromptContext(results: VaultSearchResult[]): string {
+  async buildPromptContext(results: VaultSearchResult[]): Promise<string> {
     if (results.length === 0) return "No matching data found in your AniList library.";
 
     const parts = [
@@ -330,6 +271,14 @@ export class VaultContext {
       if (n.frontmatter.episodes != null) lines.push(`  Episodes: ${n.frontmatter.episodes}`);
       if (n.frontmatter.chapters != null) lines.push(`  Chapters: ${n.frontmatter.chapters} | Volumes: ${n.frontmatter.volumes ?? "?"}`);
       if (n.frontmatter.genres) lines.push(`  Genres: ${Array.isArray(n.frontmatter.genres) ? n.frontmatter.genres.join(", ") : n.frontmatter.genres}`);
+
+      // Lazy-load body from vault if not cached
+      if (!n.body) {
+        const file = this.app.vault.getAbstractFileByPath(n.path);
+        if (file instanceof TFile) {
+          n.body = await this.app.vault.read(file);
+        }
+      }
 
       const bodyLines = n.body.split("\n");
       let inSection = "";
@@ -351,7 +300,7 @@ export class VaultContext {
   async buildContextForQuery(query: string): Promise<string> {
     await this.load();
     const results = this.search(query);
-    return this.buildPromptContext(results);
+    return await this.buildPromptContext(results);
   }
 }
 

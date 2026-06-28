@@ -6,8 +6,10 @@ import {
   MEDIA_DETAIL_QUERY,
   MEDIA_DETAILS_BATCH_QUERY,
   SUMMARY_QUERY,
+  CHARACTERS_PAGE_QUERY,
   SummaryCollection,
 } from "./queries";
+import type { AnilistCharacterEdge } from "../types";
 
 const ENDPOINT = "https://graphql.anilist.co";
 const MIN_INTERVAL_MS = 700;
@@ -165,6 +167,23 @@ export class AnilistClient {
       }
     }
     return out;
+  }
+
+  async fetchAllCharacters(mediaId: number, type: "ANIME" | "MANGA"): Promise<AnilistCharacterEdge[]> {
+    const allEdges: AnilistCharacterEdge[] = [];
+    let page = 1;
+    while (true) {
+      const data = await this.request<{
+        Media: { characters: { pageInfo: { hasNextPage: boolean }; edges: AnilistCharacterEdge[] } };
+      }>(CHARACTERS_PAGE_QUERY, { id: mediaId, type, page });
+      const conn = data?.Media?.characters;
+      if (!conn?.edges) break;
+      for (const e of conn.edges) if (e) allEdges.push(e);
+      if (!conn.pageInfo?.hasNextPage) break;
+      page += 1;
+      if (page > 50) break;
+    }
+    return allEdges;
   }
 }
 

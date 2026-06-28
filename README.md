@@ -1,6 +1,6 @@
 # Ani-sync
 
-An Obsidian plugin that syncs your [AniList](https://anilist.co/) anime & manga lists into your vault as wikilinked markdown notes, so they show up in Obsidian's graph view.
+An Obsidian plugin that syncs your [AniList](https://anilist.co/) anime & manga lists into your vault as wikilinked markdown notes, so they show up in Obsidian's graph view. Includes an AI-powered chat assistant to query your library.
 
 ## Features
 
@@ -10,6 +10,9 @@ An Obsidian plugin that syncs your [AniList](https://anilist.co/) anime & manga 
 - **Drift-free** — entries you remove from AniList are also removed from your vault.
 - **Read-only with respect to AniList** — your AniList list is the source of truth.
 - **Works on mobile** — `isDesktopOnly: false`.
+- **AI Chat Assistant** — Ask questions about your anime/manga library using natural language, powered by OpenRouter LLMs.
+- **Live Typewriter Animation** — Responses stream character-by-character with a blinking cursor, just like ChatGPT.
+- **Markdown Rendering** — Full support for bold, italic, code blocks, tables, lists, blockquotes, and more in chat responses.
 
 ## What gets synced
 
@@ -58,18 +61,24 @@ Every Anime/Manga note links out to studios, staff, tags, and relations with `[[
 | AniList username | _(empty)_ | Required |
 | Output folder | `Ani-sync` | Created automatically with `Anime/`, `Manga/`, `Studios/`, `Staff/`, `Tags/` subfolders |
 | Enable auto-sync | `true` | Runs every N minutes while Obsidian is open |
-| Poll interval | `30` (minutes, min 5) | Used when auto-sync is enabled |
+| Poll interval | `30` (seconds, min 30) | Used when auto-sync is enabled |
+| OpenRouter API key | _(empty)_ | Required for AI chat feature |
+| OpenRouter model | _(empty)_ | Select from fetched models list |
 
 ## Usage
 
-- **Ribbon icon** (database) — click to sync now.
+- **Ribbon icons**:
+  - (database) — click to sync now.
+  - (message-circle) — open AI chat sidebar.
 - **Command palette**:
   - `Ani-sync: Sync now`
   - `Ani-sync: Disconnect AniList`
   - `Ani-sync: Clear sync cache (force full re-sync)`
+  - `Ani-sync: Open Ani-sync Chat`
 - **Settings tab**:
   - **Sync now** button (same as the ribbon icon).
   - **Clear sync cache** button — next sync re-fetches every entry.
+  - **OpenRouter AI** section — configure API key and model for chat.
 
 A toast notice reports `created N, updated M, skipped K, failed F` after each sync.
 
@@ -83,6 +92,35 @@ A toast notice reports `created N, updated M, skipped K, failed F` after each sy
 6. **Removals** — entries removed from AniList are removed from the vault.
 
 The cache lives in `data.json` (Obsidian's plugin data file). AniList rate limits are respected (700ms minimum between requests, 3-attempt retry on 429 / 5xx with exponential backoff).
+
+## AI Chat
+
+The plugin includes an AI-powered chat sidebar that lets you query your synced AniList library using natural language.
+
+### Setup
+
+1. Get an API key from [OpenRouter](https://openrouter.ai/)
+2. Open **Settings → Ani-sync → OpenRouter AI**
+3. Enter your API key and click **Fetch models**
+4. Select a model from the dropdown (free models are tagged)
+
+### Features
+
+- **Natural language queries** — Ask questions like "What anime have I rated 10?" or "Show me all anime by MAPPA"
+- **Markdown responses** — Full support for bold, italic, code blocks, tables, lists, and blockquotes
+- **Live streaming** — Responses appear character-by-character with a typing cursor
+- **Fuzzy search** — Finds relevant media by title, staff, studio, genres, tags, or description
+- **Vault-based context** — Answers are grounded in your actual synced data
+
+### Example queries
+
+- "What's my highest rated anime?"
+- "Show me all anime I've completed"
+- "What genres do I watch most?"
+- "List all anime by studio Ufotable"
+- "What's the staff for Attack on Titan?"
+
+## Project layout
 
 ## Security
 
@@ -114,10 +152,17 @@ The cache lives in `data.json` (Obsidian's plugin data file). AniList rate limit
 │   ├── notes/
 │   │   ├── builder.ts         Note template, frontmatter, wikilinks
 │   │   └── slugify.ts         Filename slugs
-│   └── sync/
-│       ├── engine.ts          Orchestrator (summary → diff → write/delete)
-│       ├── hash.ts            sha256 + hash marker extract/strip
-│       └── cache.ts           AnisyncCache schema + diffSummary
+│   ├── sync/
+│   │   ├── engine.ts          Orchestrator (summary → diff → write/delete)
+│   │   ├── hash.ts            sha256 + hash marker extract/strip
+│   │   └── cache.ts           AnisyncCache schema + diffSummary
+│   ├── chat/
+│   │   ├── view.ts            Chat UI with markdown rendering + typewriter animation
+│   │   ├── context.ts         Cache-based search + prompt building
+│   │   └── vaultContext.ts    Vault markdown parsing + fuzzy search
+│   └── openrouter/
+│       ├── client.ts          OpenRouter API (models + streaming chat)
+│       └── types.ts           OpenRouter API types
 ├── docs/                      Host this on GitHub Pages
 │   ├── index.html
 │   ├── style.css

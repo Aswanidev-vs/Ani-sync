@@ -103,6 +103,8 @@
     left: 50%;
     transform: translateX(-50%);
   }
+}
+
 /* Chat view */
 .anisync-chat-container {
   display: flex;
@@ -118,6 +120,7 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+  align-content: flex-start;
 }
 
 .anisync-chat-welcome {
@@ -130,7 +133,7 @@
 .anisync-chat-message {
   display: flex;
   gap: 8px;
-  max-width: 90%;
+  max-width: 95%;
 }
 
 .anisync-chat-message-user {
@@ -157,19 +160,206 @@
 }
 
 .anisync-chat-bubble {
-  padding: 8px 12px;
-  border-radius: 8px;
+  padding: 10px 14px;
+  border-radius: 12px;
   background: var(--background-secondary);
   color: var(--text-normal);
   font-size: 13px;
-  line-height: 1.5;
-  white-space: pre-wrap;
+  line-height: 1.6;
   word-break: break-word;
+  max-width: 100%;
 }
 
 .anisync-chat-message-user .anisync-chat-bubble {
   background: var(--color-accent);
   color: var(--text-on-accent);
+  border-bottom-right-radius: 4px;
+}
+
+.anisync-chat-message-assistant .anisync-chat-bubble {
+  border-bottom-left-radius: 4px;
+}
+
+/* Markdown rendering in chat bubbles */
+.anisync-chat-bubble p {
+  margin: 0.5em 0;
+}
+
+.anisync-chat-bubble p:first-child {
+  margin-top: 0;
+}
+
+.anisync-chat-bubble p:last-child {
+  margin-bottom: 0;
+}
+
+.anisync-chat-bubble strong,
+.anisync-chat-bubble b {
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.anisync-chat-bubble em,
+.anisync-chat-bubble i {
+  font-style: italic;
+}
+
+.anisync-chat-bubble code {
+  font-family: var(--font-monospace);
+  font-size: 0.85em;
+  background: var(--background-modifier-hover);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  color: var(--color-accent);
+}
+
+.anisync-chat-message-user .anisync-chat-bubble code {
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--text-on-accent);
+}
+
+.anisync-chat-bubble pre {
+  margin: 0.75em 0;
+  padding: 12px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 0.8em;
+  line-height: 1.5;
+}
+
+.anisync-chat-bubble pre code {
+  background: transparent;
+  padding: 0;
+  color: var(--text-normal);
+  font-size: inherit;
+}
+
+.anisync-chat-message-user .anisync-chat-bubble pre {
+  background: rgba(0, 0, 0, 0.15);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.anisync-chat-bubble ul,
+.anisync-chat-bubble ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+
+.anisync-chat-bubble li {
+  margin: 0.25em 0;
+}
+
+.anisync-chat-bubble blockquote {
+  margin: 0.75em 0;
+  padding: 0.5em 1em;
+  border-left: 3px solid var(--color-accent);
+  background: var(--background-modifier-hover);
+  border-radius: 0 8px 8px 0;
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+.anisync-chat-message-user .anisync-chat-bubble blockquote {
+  border-left-color: var(--text-on-accent);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.anisync-chat-bubble h1,
+.anisync-chat-bubble h2,
+.anisync-chat-bubble h3 {
+  margin: 0.75em 0 0.5em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.anisync-chat-bubble h1 { font-size: 1.2em; }
+.anisync-chat-bubble h2 { font-size: 1.1em; }
+.anisync-chat-bubble h3 { font-size: 1em; }
+
+.anisync-chat-bubble hr {
+  border: none;
+  border-top: 1px solid var(--background-modifier-border);
+  margin: 1em 0;
+}
+
+.anisync-chat-bubble a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+.anisync-chat-bubble a:hover {
+  text-decoration: underline;
+}
+
+.anisync-chat-message-user .anisync-chat-bubble a {
+  color: var(--text-on-accent);
+}
+
+.anisync-chat-bubble table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75em 0;
+  font-size: 0.9em;
+}
+
+.anisync-chat-bubble th,
+.anisync-chat-bubble td {
+  padding: 6px 10px;
+  border: 1px solid var(--background-modifier-border);
+  text-align: left;
+}
+
+.anisync-chat-bubble th {
+  background: var(--background-modifier-hover);
+  font-weight: 600;
+}
+
+.anisync-chat-bubble tr:nth-child(even) td {
+  background: var(--background-modifier-hover);
+}
+
+/* Blinking cursor for typewriter effect */
+.anisync-cursor {
+  display: inline;
+  animation: anisync-cursor-blink 0.7s step-end infinite;
+  color: var(--text-normal);
+  font-weight: 400;
+  margin-left: 1px;
+}
+
+@keyframes anisync-cursor-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* Thinking animation inside bubble */
+.anisync-chat-thinking {
+  color: var(--text-muted);
+  font-size: 13px;
+  animation: anisync-thinking-dots 1.4s infinite;
+}
+
+@keyframes anisync-thinking-dots {
+  0%, 20% { opacity: 0.4; }
+  40% { opacity: 1; }
+  60%, 100% { opacity: 0.4; }
+}
+
+/* Typing cursor animation */
+.anisync-chat-typing {
+  display: inline-block;
+  animation: anisync-typing 1.2s infinite;
+  color: var(--text-muted);
+  font-size: 14px;
+  margin-left: 4px;
+}
+
+@keyframes anisync-typing {
+  0% { opacity: 0.4; }
+  20% { opacity: 1; }
+  100% { opacity: 0.4; }
 }
 
 .anisync-chat-input-area {
@@ -223,18 +413,4 @@
   font-size: 12px;
   color: var(--text-muted);
   text-align: center;
-}
-
-.anisync-chat-typing {
-  display: inline-block;
-  animation: anisync-typing 1.2s infinite;
-  color: var(--text-muted);
-  font-size: 14px;
-  margin-left: 4px;
-}
-
-@keyframes anisync-typing {
-  0% { opacity: 0.4; }
-  20% { opacity: 1; }
-  100% { opacity: 0.4; }
 }

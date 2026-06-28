@@ -367,10 +367,17 @@ function yamlScalar(v: unknown): string {
 
 function stripHtml(html: string | null | undefined): string {
   if (!html) return "";
-  return html
+  let text = html
     .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n\n")
-    .replace(/<[^>]+>/g, "")
+    .replace(/<\/p>/gi, "\n\n");
+
+  let previous: string;
+  do {
+    previous = text;
+    text = text.replace(/<[^>]+>/g, "");
+  } while (text !== previous);
+
+  return text
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }

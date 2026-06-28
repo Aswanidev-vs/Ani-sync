@@ -20,11 +20,19 @@ export class AnisyncSettingTab extends PluginSettingTab {
       cls: "setting-item-description",
     });
 
-    this.renderOAuthSection(containerEl);
-    this.renderSyncSection(containerEl);
-    this.renderSyncSettingsSection(containerEl);
-    this.renderOpenRouterSection(containerEl);
-    this.renderActionsSection(containerEl);
+    this.safeRender("OAuth", () => this.renderOAuthSection(containerEl));
+    this.safeRender("Sync", () => this.renderSyncSection(containerEl));
+    this.safeRender("SyncSettings", () => this.renderSyncSettingsSection(containerEl));
+    this.safeRender("OpenRouter", () => this.renderOpenRouterSection(containerEl));
+    this.safeRender("Actions", () => this.renderActionsSection(containerEl));
+  }
+
+  private safeRender(name: string, fn: () => void): void {
+    try {
+      fn();
+    } catch (e) {
+      console.error(`Ani-sync: ${name} section render failed`, e);
+    }
   }
 
   private renderOAuthSection(containerEl: HTMLElement): void {
@@ -94,14 +102,19 @@ export class AnisyncSettingTab extends PluginSettingTab {
       new Setting(containerEl)
         .setName("Disconnect")
         .setDesc("Remove your AniList connection.")
-        .addButton((btn) =>
-          btn
-            .setButtonText("Disconnect")
-            .setDestructive()
-            .onClick(async () => {
-              await this.plugin.disconnectAnilist();
-              this.plugin.refreshSettingsTab();
-              new Notice("Disconnected from AniList.", 3000);
+            .addButton((btn) =>
+              btn
+                .setButtonText("Disconnect")
+                .onClick(() => {
+              console.log("Ani-sync: disconnect button clicked, plugin=", this.plugin);
+              this.plugin.disconnectAnilist().then(() => {
+                new Notice("Disconnected from AniList.", 3000);
+              }).catch((e) => {
+                const msg = e?.message ?? String(e);
+                new Notice(`Disconnect failed: ${msg}`, 6000);
+              }).finally(() => {
+                this.plugin.refreshSettingsTab();
+              });
             }),
         );
     }
@@ -182,32 +195,6 @@ export class AnisyncSettingTab extends PluginSettingTab {
         text.inputEl.type = "password";
       });
 
-    const modelSetting = new Setting(containerEl)
-      .setName("Model")
-      .setDesc("Select an OpenRouter model for chat.")
-      .addDropdown((dropdown) => {
-        const models = s.openrouterAvailableModels;
-        if (models.length > 0) {
-          for (const m of models) {
-            const label = m.isFree ? `[Free] ${m.name}` : m.name;
-            dropdown.addOption(m.id, label);
-          }
-          if (s.openrouterModel) {
-            dropdown.setValue(s.openrouterModel);
-          } else {
-            dropdown.setValue(models[0].id);
-            s.openrouterModel = models[0].id;
-          }
-        } else {
-          dropdown.addOption("", "No models — fetch first");
-        }
-        dropdown.onChange(async (value) => {
-          s.openrouterModel = value;
-          await this.plugin.saveSettings();
-        });
-        return dropdown;
-      });
-
     new Setting(containerEl)
       .setName("Fetch available models")
       .setDesc("Retrieve the list of models from OpenRouter. Free models are tagged.")
@@ -226,7 +213,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
               s.openrouterModel = models[0].id;
             }
             await this.plugin.saveSettings();
-            this.display();
+            this.plugin.refreshSettingsTab();
             new Notice(`Fetched ${models.length} models (${models.filter((m) => m.isFree).length} free).`, 4000);
           } catch (err) {
             const msg = (err as Error)?.message ?? String(err);
@@ -237,6 +224,26 @@ export class AnisyncSettingTab extends PluginSettingTab {
           }
         }),
       );
+
+    new Setting(containerEl)
+      .setName("Model")
+      .setDesc("Select an OpenRouter model for chat.")
+      .addDropdown((dropdown) => {
+        const models = s.openrouterAvailableModels;
+        if (models.length > 0) {
+          for (const m of models) {
+            const label = m.isFree ? `[Free] ${m.name}` : m.name;
+            dropdown.addOption(m.id, label);
+          }
+          dropdown.setValue(s.openrouterModel || models[0].id);
+        } else {
+          dropdown.addOption("", "No models — fetch first");
+        }
+        dropdown.onChange(async (value) => {
+          s.openrouterModel = value;
+          await this.plugin.saveSettings();
+        });
+      });
   }
 
   private renderActionsSection(containerEl: HTMLElement): void {
@@ -257,14 +264,19 @@ export class AnisyncSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Clear sync cache")
       .setDesc("Force a complete re-sync by clearing all cached data.")
-      .addButton((btn) =>
-        btn
-          .setButtonText("Clear cache")
-          .setDestructive()
-          .onClick(async () => {
-            await this.plugin.clearCache();
-            new Notice("Cache cleared. Next sync will be a full re-download.", 5000);
-            this.display();
+          .addButton((btn) =>
+            btn
+              .setButtonText("Clear cache")
+              .onClick(async () => {
+            try {
+              await this.plugin.clearCache();
+              new Notice("Cache cleared. Next sync will be a full re-download.", 5000);
+            } catch (e) {
+              const msg = (e as Error)?.message ?? String(e);
+              new Notice(`Failed to clear cache: ${msg}`, 6000);
+            } finally {
+              this.plugin.refreshSettingsTab();
+            }
           }),
       );
   }

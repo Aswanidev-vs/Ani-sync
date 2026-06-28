@@ -3,7 +3,7 @@ import type { App } from "obsidian";
 
 export interface VaultNode {
   id: string;
-  type: "anime" | "manga" | "staff" | "studio" | "tag" | "profile";
+  type: "anime" | "manga" | "staff" | "studio" | "tag" | "profile" | "character" | "voiceactor";
   title: string;
   frontmatter: Record<string, unknown>;
   body: string;
@@ -15,6 +15,12 @@ export interface VaultSearchResult {
   score: number;
   matchedField: string;
 }
+
+const TYPE_MAP: Record<string, VaultNode["type"]> = {
+  ANIME: "anime", MANGA: "manga", STAFF: "staff",
+  STUDIO: "studio", TAG: "tag", PROFILE: "profile",
+  CHARACTER: "character", VOICE_ACTOR: "voiceactor",
+};
 
 export class VaultContext {
   private app: App;
@@ -60,7 +66,7 @@ export class VaultContext {
       if (!frontmatter?.anilistId) return null;
 
       const type = frontmatter.type as string;
-      const normalizedType = type === "ANIME" ? "anime" : type === "MANGA" ? "manga" : type.toLowerCase();
+      const normalizedType = TYPE_MAP[type] ?? type.toLowerCase() as VaultNode["type"];
       const id = `${normalizedType}:${frontmatter.anilistId}`;
       const title = this.extractTitle(frontmatter, body);
 

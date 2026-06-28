@@ -103,6 +103,8 @@
     left: 50%;
     transform: translateX(-50%);
   }
+}
+
 /* Chat view */
 .anisync-chat-container {
   display: flex;

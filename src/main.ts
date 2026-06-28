@@ -8,7 +8,7 @@ import { AnisyncCache, emptyCache } from "./sync/cache";
 import {
   openAuthorizePopup,
   handleDeepLinkToken,
-  disconnectAnilist,
+  clearAnilistCredentials,
   probeAnilistConnection,
 } from "./auth/implicit";
 
@@ -92,6 +92,7 @@ export default class AnisyncPlugin extends Plugin {
     this.addCommand({
       id: "sync-now",
       name: "Sync now",
+      hotkeys: [{ modifiers: ["Mod", "Shift"], key: "s" }],
       checkCallback: (checking) => {
         if (checking) return this.canSync();
         void this.runSync();
@@ -102,11 +103,16 @@ export default class AnisyncPlugin extends Plugin {
     this.addCommand({
       id: "disconnect",
       name: "Disconnect AniList",
+      hotkeys: [{ modifiers: ["Mod", "Shift"], key: "d" }],
       checkCallback: (checking) => {
         if (checking) return !!this.settings.anilistToken;
         void this.disconnectAnilist().then(() => {
           this.refreshSettingsTab();
           new Notice("Disconnected from AniList.", 3000);
+        }).catch((e) => {
+          const msg = (e as Error)?.message ?? String(e);
+          new Notice(`Disconnect failed: ${msg}`, 6000);
+          this.refreshSettingsTab();
         });
         return true;
       },
@@ -115,6 +121,7 @@ export default class AnisyncPlugin extends Plugin {
     this.addCommand({
       id: "clear-cache",
       name: "Clear sync cache (force full re-sync)",
+      hotkeys: [{ modifiers: ["Mod", "Shift"], key: "c" }],
       callback: () => {
         void this.clearCache();
       },
@@ -123,6 +130,7 @@ export default class AnisyncPlugin extends Plugin {
     this.addCommand({
       id: "open-chat",
       name: "Open Ani-sync Chat",
+      hotkeys: [{ modifiers: ["Mod", "Shift"], key: "o" }],
       callback: () => {
         void this.openChatView();
       },
@@ -186,9 +194,10 @@ export default class AnisyncPlugin extends Plugin {
   }
 
   async disconnectAnilist(): Promise<void> {
+    this.stopAutoSync();
     this.syncEngine?.cancel();
     this.syncPopup.hide();
-    await disconnectAnilist(this);
+    await clearAnilistCredentials(this);
   }
 
   startAutoSync(): void {
@@ -248,8 +257,8 @@ export default class AnisyncPlugin extends Plugin {
       username: this.settings.anilistUsername,
       cache: this.cache,
       onLog: () => {},
-      onProgress: (m) => {
-        this.syncPopup.show(m, this.estimateProgress(m));
+      onProgress: (m, p) => {
+        this.syncPopup.show(m, p ?? this.estimateProgress(m));
       },
     });
 
@@ -343,6 +352,13 @@ export default class AnisyncPlugin extends Plugin {
         const file = vault.getAbstractFileByPath(path);
         if (file instanceof TFile) {
           await fileManager.trashFile(file);
+        }
+      },
+      async exists(path: string): Promise<boolean> {
+        try {
+          return await adapter.exists(path);
+        } catch {
+          return false;
         }
       },
     };

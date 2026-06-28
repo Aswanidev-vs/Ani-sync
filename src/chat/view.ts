@@ -1,9 +1,18 @@
-import { ItemView, WorkspaceLeaf } from "obsidian";
+import { ItemView, WorkspaceLeaf, MarkdownRenderer, MarkdownView } from "obsidian";
 import type AnisyncPlugin from "../main";
 import { VaultContext } from "./vaultContext";
 import { sendChatStream } from "../openrouter/client";
 
 export const CHAT_VIEW_TYPE = "ani-sync-chat-view";
+
+interface StreamingMessage {
+  bubbleEl: HTMLDivElement;
+  fullContent: string;
+  displayedContent: string;
+  animationId: number | null;
+  isComplete: boolean;
+  resolve: (value: void) => void;
+}
 
 export class ChatView extends ItemView {
   private plugin: AnisyncPlugin;
@@ -11,6 +20,8 @@ export class ChatView extends ItemView {
   private inputEl!: HTMLTextAreaElement;
   private sendBtn!: HTMLButtonElement;
   private loadingEl!: HTMLDivElement;
+  private currentStream: StreamingMessage | null = null;
+  private readonly TYPING_SPEED_MS = 15;
 
   constructor(leaf: WorkspaceLeaf, plugin: AnisyncPlugin) {
     super(leaf);
@@ -60,7 +71,9 @@ export class ChatView extends ItemView {
   }
 
   async onClose(): Promise<void> {
-    // nothing to clean up
+    if (this.currentStream?.animationId) {
+      cancelAnimationFrame(this.currentStream.animationId);
+    }
   }
 
   private showWelcome(): void {
@@ -87,47 +100,108 @@ export class ChatView extends ItemView {
     const outputDir = this.plugin.settings.outputDir;
     const vaultContext = new VaultContext(this.plugin.app, outputDir);
     
-    // Debug: log loaded files
     await vaultContext.load();
-    console.log("[VaultContext] Loaded", vaultContext.getLoadedCount(), "files");
-    console.log("[VaultContext] Titles:", vaultContext.getLoadedTitles().slice(0, 20));
-    
     const context = await vaultContext.buildContextForQuery(text);
 
     try {
-      let fullContent = "";
       const msgEl = this.addMessage("assistant", "");
-      const typingEl = this.showTyping(msgEl);
-
-      await sendChatStream(apiKey, model, [
-        { role: "system", content: "You are an AniList assistant. Answer ONLY from the provided graph data context. If the answer isn't in the context, say so. Be concise and direct." },
-        { role: "user", content: `[Context]\n${context}\n\n[Question]\n${text}` },
-      ], (token) => {
-        fullContent += token;
-        msgEl.setText(fullContent);
-        this.hideTyping(typingEl);
+      const bubbleEl = msgEl.querySelector(".anisync-chat-bubble") as HTMLDivElement;
+      
+      const streamPromise = new Promise<void>((resolve) => {
+        this.currentStream = {
+          bubbleEl,
+          fullContent: "",
+          displayedContent: "",
+          animationId: null,
+          isComplete: false,
+          resolve,
+        };
       });
 
-      this.hideTyping(typingEl);
-      if (!fullContent.trim()) {
-        msgEl.setText("No response received from the model.");
+      await sendChatStream(apiKey, model, [
+        { role: "system", content: "You are an AniList assistant. Answer ONLY from the provided graph data context. If the answer isn't in the context, say so. Be concise and direct. Use markdown formatting for readability." },
+        { role: "user", content: `[Context]\n${context}\n\n[Question]\n${text}` },
+      ], (token) => {
+        this.onTokenReceived(token);
+      });
+
+      await streamPromise;
+      this.finishStreaming();
+      
+      if (!this.currentStream?.fullContent.trim()) {
+        await this.renderMarkdown(bubbleEl, "No response received from the model.");
       }
     } catch (err) {
       const msg = (err as Error)?.message ?? String(err);
       this.addMessage("assistant", `Error: ${msg}`);
     } finally {
       this.hideLoading();
+      this.currentStream = null;
     }
   }
 
-  private showTyping(bubbleEl: HTMLDivElement): HTMLSpanElement {
-    const typing = bubbleEl.createSpan({ cls: "anisync-chat-typing" });
-    typing.setText("●●●");
-    return typing;
+  private onTokenReceived(token: string): void {
+    if (!this.currentStream) return;
+    
+    this.currentStream.fullContent += token;
+    
+    if (!this.currentStream.animationId) {
+      this.startTypewriterAnimation();
+    }
   }
 
-  private hideTyping(typingEl: HTMLSpanElement): void {
-    typingEl.remove();
+  private startTypewriterAnimation(): void {
+    if (!this.currentStream) return;
+    
+    const animate = () => {
+      if (!this.currentStream) return;
+      
+      const remaining = this.currentStream.fullContent.length - this.currentStream.displayedContent.length;
+      
+      if (remaining > 0) {
+        const charsToAdd = Math.max(1, Math.ceil(remaining * 0.1));
+        this.currentStream.displayedContent = this.currentStream.fullContent.slice(0, this.currentStream.displayedContent.length + charsToAdd);
+        this.renderMarkdown(this.currentStream.bubbleEl, this.currentStream.displayedContent + "▋");
+      }
+      
+      if (this.currentStream.displayedContent.length < this.currentStream.fullContent.length) {
+        this.currentStream.animationId = requestAnimationFrame(animate);
+      } else if (this.currentStream.isComplete) {
+        this.renderMarkdown(this.currentStream.bubbleEl, this.currentStream.fullContent);
+        this.currentStream.resolve();
+      } else {
+        this.currentStream.animationId = requestAnimationFrame(animate);
+      }
+    };
+    
+    this.currentStream.animationId = requestAnimationFrame(animate);
+  }
+
+  private finishStreaming(): void {
+    if (!this.currentStream) return;
+    
+    this.currentStream.isComplete = true;
+    
+    if (this.currentStream.animationId) {
+      cancelAnimationFrame(this.currentStream.animationId);
+      this.currentStream.animationId = null;
+    }
+    
+    this.renderMarkdown(this.currentStream.bubbleEl, this.currentStream.fullContent);
+    this.currentStream.resolve();
+  }
+
+  private async renderMarkdown(el: HTMLDivElement, content: string): Promise<void> {
+    el.empty();
+    await MarkdownRenderer.render(
+      this.plugin.app,
+      content,
+      el,
+      "",
+      this
+    );
+    
+    this.messagesEl.scrollTo(0, this.messagesEl.scrollHeight);
   }
 
   private addMessage(role: "user" | "assistant", content: string): HTMLDivElement {
@@ -145,7 +219,13 @@ export class ChatView extends ItemView {
     }
 
     const bubble = msg.createDiv({ cls: "anisync-chat-bubble" });
-    bubble.setText(content);
+    
+    if (role === "user") {
+      bubble.setText(content);
+    } else {
+      this.renderMarkdown(bubble, content);
+    }
+    
     this.messagesEl.scrollTo(0, this.messagesEl.scrollHeight);
     return bubble;
   }

@@ -10,7 +10,7 @@ An Obsidian plugin that syncs your [AniList](https://anilist.co/) anime & manga 
 - **Drift-free** — entries you remove from AniList are also removed from your vault.
 - **Read-only with respect to AniList** — your AniList list is the source of truth.
 - **Works on mobile** — `isDesktopOnly: false`.
-- **AI Chat Assistant** — Ask questions about your anime/manga library using natural language, powered by OpenRouter LLMs.
+- **AI Chat Assistant** — Ask questions about your anime/manga library using natural language, powered by OpenRouter LLMs. Implemented by [Aswanidev-vs](https://github.com/Aswanidev-vs).
 - **Live Typewriter Animation** — Responses stream character-by-character with a blinking cursor, just like ChatGPT.
 - **Markdown Rendering** — Full support for bold, italic, code blocks, tables, lists, blockquotes, and more in chat responses.
 
@@ -172,6 +172,10 @@ The plugin includes an AI-powered chat sidebar that lets you query your synced A
     ├── deploy-docs.yml        Deploy docs/ to GitHub Pages
     └── release.yml            Build + create release with zip
 ```
+
+## Contributors
+
+- [Aswanidev-vs](https://github.com/Aswanidev-vs) — AI Chat Assistant implementation
 
 ## License
 

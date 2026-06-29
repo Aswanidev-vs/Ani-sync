@@ -43,5 +43,13 @@ export const DEFAULT_SETTINGS: AnisyncSettings = {
   openrouterApiKey: "",
   openrouterModel: "",
   openrouterAvailableModels: [],
+  graphColors: {
+    anime: "#02a9ff",
+    manga: "#8b5cf6",
+    staff: "#4ade80",
+    studios: "#f59e0b",
+    tags: "#f87171",
+    characters: "#fbbf24",
+  },
   graphColors: { ...DEFAULT_GRAPH_COLORS },
 };

@@ -265,6 +265,32 @@ export class AnisyncSettingTab extends PluginSettingTab {
       cls: "setting-item-description",
     });
 
+    for (const [key, label, defaultColor] of labels) {
+      const currentColor = colors[key] || defaultColor;
+      new Setting(containerEl)
+        .setName(label)
+        .setDesc(`Graph node colour for ${label.toLowerCase()} notes`)
+        .addColorPicker((picker) =>
+          picker
+            .setValue(currentColor)
+            .onChange(async (value) => {
+              colors[key] = value;
+              await this.plugin.saveSettings();
+              this.plugin.applyGraphColors();
+            }),
+        )
+        .addButton((btn) =>
+          btn
+            .setButtonText("Reset")
+            .setTooltip(`Reset to ${defaultColor}`)
+            .onClick(async () => {
+              colors[key] = defaultColor;
+              await this.plugin.saveSettings();
+              this.plugin.applyGraphColors();
+              this.display();
+            }),
+        );
+    }
     for (const [key, label, _default] of labels) {
       new Setting(containerEl)
         .setName(label)

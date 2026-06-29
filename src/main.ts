@@ -70,6 +70,7 @@ export default class AnisyncPlugin extends Plugin {
 
   async onload(): Promise<void> {
     await this.loadAll();
+    this.applyGraphColors();
 
     this.registerObsidianProtocolHandler("ani-sync", (params) => {
       const token = params.token;
@@ -366,6 +367,53 @@ export default class AnisyncPlugin extends Plugin {
   async clearCache(): Promise<void> {
     this.cache = emptyCache();
     await this.saveAll();
+  }
+
+  applyGraphColors(): void {
+    const colors = this.settings.graphColors;
+    const outputDir = this.settings.outputDir;
+
+    const rules: string[] = [];
+
+    // Obsidian graph nodes are SVG <g> elements with <text> children
+    // Target by file path using data-path attribute on the node groups
+    const folderMap: [string, string][] = [
+      ["/Anime/", colors.anime],
+      ["/Manga/", colors.manga],
+      ["/Staff/", colors.staff],
+      ["/Studios/", colors.studios],
+      ["/Tags/", colors.tags],
+      ["/Characters/", colors.characters],
+    ];
+
+    for (const [folder, color] of folderMap) {
+      if (!color) continue;
+      // Target graph nodes by matching file path in their data or text
+      rules.push(`.graph-view .graph-node[data-path*="${outputDir}${folder}"] circle { fill: ${color} !important; }`);
+      rules.push(`.graph-view .graph-node[data-path*="${outputDir}${folder}"] text { fill: ${color} !important; }`);
+      // Fallback: target by link text content
+      rules.push(`.graph-view .graph-node:has(text:is("${folder.replace(/\//g, "")}")) circle { fill: ${color} !important; }`);
+    }
+
+    // Also set Obsidian's CSS custom properties for graph colors
+    const colorValues = [colors.anime, colors.manga, colors.staff, colors.studios, colors.tags, colors.characters].filter(Boolean);
+    if (colorValues.length > 0) {
+      rules.push(`.graph-view { --graph-color-0: ${colorValues[0]}; }`);
+      if (colorValues[1]) rules.push(`.graph-view { --graph-color-1: ${colorValues[1]}; }`);
+      if (colorValues[2]) rules.push(`.graph-view { --graph-color-2: ${colorValues[2]}; }`);
+      if (colorValues[3]) rules.push(`.graph-view { --graph-color-3: ${colorValues[3]}; }`);
+      if (colorValues[4]) rules.push(`.graph-view { --graph-color-4: ${colorValues[4]}; }`);
+      if (colorValues[5]) rules.push(`.graph-view { --graph-color-5: ${colorValues[5]}; }`);
+    }
+
+    const css = rules.join("\n");
+    let styleEl = document.getElementById("anisync-graph-colors") as HTMLStyleElement;
+    if (!styleEl) {
+      styleEl = document.createElement("style");
+      styleEl.id = "anisync-graph-colors";
+      document.head.appendChild(styleEl);
+    }
+    styleEl.textContent = css;
   }
 
   private buildVaultAdapter(): VaultAdapter {

@@ -124,13 +124,12 @@ The plugin includes an AI-powered chat sidebar that lets you query your synced A
 - "List all anime by studio Ufotable"
 - "What's the staff for Attack on Titan?"
 
-## Project layout
-
 ## Security
 
 - Your AniList token is stored in Obsidian's `data.json` (not synced to git if you ignore it).
 - The hosted callback page is static; the Client ID is hardcoded.
 - The plugin's settings tab verifies `event.origin === 'https://agniveshtm.github.io'` before trusting the OAuth `postMessage`.
+- Your OpenRouter API key is stored in Obsidian's `data.json` and sent only to OpenRouter's API endpoint.
 
 ## Project layout
 

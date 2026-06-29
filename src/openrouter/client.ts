@@ -24,6 +24,11 @@ export async function fetchModels(apiKey: string): Promise<OpenRouterModel[]> {
     ? response.json
     : JSON.parse(response.text);
 
+  if (json && typeof json === "object" && "error" in json) {
+    const err = (json as Record<string, unknown>).error as Record<string, unknown> | undefined;
+    throw new Error(err?.message as string ?? JSON.stringify(err));
+  }
+
   const body = json as ModelListResponse;
   const models = (body.data ?? []).map((m) => ({
     id: m.id,

@@ -60,8 +60,10 @@ export class AnilistClient {
       });
 
       const h = response.headers ?? {};
-      this.limit = Number(h["x-ratelimit-limit"]) || this.limit;
-      this.remaining = Number(h["x-ratelimit-remaining"]) ?? this.remaining - 1;
+      const limitVal = Number(h["x-ratelimit-limit"]);
+      if (!isNaN(limitVal)) this.limit = limitVal;
+      const remainingVal = Number(h["x-ratelimit-remaining"]);
+      this.remaining = isNaN(remainingVal) ? this.remaining - 1 : remainingVal;
 
       if (response.status === 429) {
         const ra = Number(h["retry-after"] ?? "60");

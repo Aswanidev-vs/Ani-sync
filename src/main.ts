@@ -236,10 +236,11 @@ export default class AnisyncPlugin extends Plugin {
       const adapter = this.app.vault.adapter;
       const raw = await adapter.exists(path) ? await adapter.read(path) : '{"colorGroups":[]}';
       const graph = JSON.parse(raw);
+      const outputDir = (this.settings.outputDir ?? "Ani-sync").replace(/^\/+|\/+$/g, "") || "Ani-sync";
       const groups: Record<string, unknown>[] = graph.colorGroups ?? [];
       const kept = groups.filter((g: Record<string, unknown>) => {
         const q = (g.query as string ?? "").trim();
-        return !q.startsWith(`path:${this.settings.outputDir}/`);
+        return !q.startsWith(`path:${outputDir}/`);
       });
       const folderMap: Record<string, string> = {
         anime: "Anime",
@@ -250,11 +251,13 @@ export default class AnisyncPlugin extends Plugin {
         characters: "Characters",
         voiceActors: "Voice-Actors",
       };
+      const colors = (this.settings.graphColors ?? {}) as unknown as Record<string, string>;
       for (const [key, folder] of Object.entries(folderMap)) {
-        const hex = (this.settings.graphColors as unknown as Record<string, string>)[key] ?? "#ffffff";
+        const hex = colors[key] ?? "#ffffff";
+        const rgb = parseInt(hex.replace("#", ""), 16);
         kept.push({
-          query: `path:${this.settings.outputDir}/${folder}`,
-          color: { rgb: parseInt(hex.replace("#", ""), 16), a: 1 },
+          query: `path:${outputDir}/${folder}`,
+          color: { rgb: isNaN(rgb) ? 16777215 : rgb, a: 1 },
         });
       }
       graph.colorGroups = kept;

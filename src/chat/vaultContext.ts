@@ -101,7 +101,15 @@ export class VaultContext {
     return this.nodes.map((n) => n.title).sort();
   }
 
-  search(query: string): VaultSearchResult[] {
+  private async loadNodeBody(node: VaultNode): Promise<void> {
+    if (node.body) return;
+    const file = this.app.vault.getAbstractFileByPath(node.path);
+    if (file instanceof TFile) {
+      node.body = await this.app.vault.cachedRead(file);
+    }
+  }
+
+  async search(query: string): Promise<VaultSearchResult[]> {
     const q = query.toLowerCase().trim();
     if (!q) return [];
 
@@ -157,6 +165,7 @@ export class VaultContext {
         matchedField = "anilistId";
       }
 
+      await this.loadNodeBody(node);
       if (node.body.toLowerCase().includes(q)) {
         bestScore = Math.max(bestScore, 30);
         matchedField = matchedField || "body";
@@ -244,12 +253,16 @@ export class VaultContext {
     return this.nodes.filter((n) => n.type === "anime" || n.type === "manga");
   }
 
-  getStaffWorks(name: string): VaultNode[] {
+  async getStaffWorks(name: string): Promise<VaultNode[]> {
     const q = name.toLowerCase().trim();
     if (!q) return [];
-    return this.nodes.filter((n) =>
-      n.body.toLowerCase().includes(q) && (n.type === "anime" || n.type === "manga")
-    );
+    const results: VaultNode[] = [];
+    for (const n of this.nodes) {
+      if (n.type !== "anime" && n.type !== "manga") continue;
+      await this.loadNodeBody(n);
+      if (n.body.toLowerCase().includes(q)) results.push(n);
+    }
+    return results;
   }
 
   async buildPromptContext(results: VaultSearchResult[]): Promise<string> {
@@ -300,7 +313,7 @@ export class VaultContext {
 
   async buildContextForQuery(query: string): Promise<string> {
     await this.load();
-    const results = this.search(query);
+    const results = await this.search(query);
     return await this.buildPromptContext(results);
   }
 }

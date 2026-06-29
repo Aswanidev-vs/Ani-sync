@@ -511,7 +511,7 @@ export function buildMediaArtifact(note: MediaNote, titleSlug: string, syncedAt:
     body.push("");
     for (const c of note.characters) {
       const vaLinks = c.voiceActors.length
-        ? ` (voiced by ${c.voiceActors.map(va => `[[Voice-Actors/${slugify(va.name)}|${va.name}]]`).join(", ")})`
+        ? ` (voiced by ${c.voiceActors.map(va => va.name).join(", ")})`
         : "";
       body.push(`- [[Characters/${slugify(c.name)}|${c.name}]] — ${c.role ?? ""}${vaLinks}`);
     }

@@ -3,7 +3,7 @@ import type { App } from "obsidian";
 
 export interface VaultNode {
   id: string;
-  type: "anime" | "manga" | "staff" | "studio" | "tag" | "profile" | "character" | "voiceactor";
+  type: "anime" | "manga" | "staff" | "studio" | "tag" | "profile" | "character";
   title: string;
   frontmatter: Record<string, unknown>;
   body: string;
@@ -19,7 +19,7 @@ export interface VaultSearchResult {
 const TYPE_MAP: Record<string, VaultNode["type"]> = {
   ANIME: "anime", MANGA: "manga", STAFF: "staff",
   STUDIO: "studio", TAG: "tag", PROFILE: "profile",
-  CHARACTER: "character", VOICE_ACTOR: "voiceactor",
+  CHARACTER: "character",
 };
 
 const TRIGRAM_SIZE = 3;

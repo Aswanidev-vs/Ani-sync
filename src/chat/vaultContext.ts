@@ -22,11 +22,222 @@ const TYPE_MAP: Record<string, VaultNode["type"]> = {
   CHARACTER: "character", VOICE_ACTOR: "voiceactor",
 };
 
+const TRIGRAM_SIZE = 3;
+
+function buildTrigrams(text: string): Set<string> {
+  const trigrams = new Set<string>();
+  const lower = text.toLowerCase();
+  for (let i = 0; i <= lower.length - TRIGRAM_SIZE; i++) {
+    trigrams.add(lower.slice(i, i + TRIGRAM_SIZE));
+  }
+  return trigrams;
+}
+
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(t => t.length > 0);
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let intersection = 0;
+  for (const t of a) if (b.has(t)) intersection++;
+  return intersection / (a.size + b.size - intersection);
+}
+
+interface IndexEntry {
+  node: VaultNode;
+  titleTrigrams: Set<string>;
+  bodyTrigrams: Set<string>;
+  titleTokens: string[];
+  bodyTokens: string[];
+  titleFreq: Map<string, number>;
+  bodyFreq: Map<string, number>;
+  totalTokens: number;
+}
+
+class SearchIndex {
+  entries: IndexEntry[] = [];
+  private df = new Map<string, number>();
+  private totalDocs = 0;
+  private maxDf = 0;
+
+  build(nodes: VaultNode[]): void {
+    this.entries = [];
+    this.df.clear();
+    this.totalDocs = nodes.length;
+    this.maxDf = Math.floor(nodes.length * 0.75);
+
+    for (const node of nodes) {
+      const allText = `${node.title} ${node.frontmatter.name ?? ""} ${node.frontmatter.nativeName ?? ""} ${node.body}`;
+      const titleTokens = tokenize(`${node.title} ${node.frontmatter.name ?? ""} ${node.frontmatter.nativeName ?? ""}`);
+      const bodyTokens = tokenize(node.body);
+
+      const titleFreq = new Map<string, number>();
+      const bodyFreq = new Map<string, number>();
+      for (const t of titleTokens) titleFreq.set(t, (titleFreq.get(t) ?? 0) + 1);
+      for (const t of bodyTokens) bodyFreq.set(t, (bodyFreq.get(t) ?? 0) + 1);
+
+      const titleTrigrams = buildTrigrams(node.title);
+      const bodyTrigrams = buildTrigrams(allText);
+
+      const allTokens = new Set([...titleTokens, ...bodyTokens]);
+      for (const token of allTokens) {
+        this.df.set(token, (this.df.get(token) ?? 0) + 1);
+      }
+
+      this.entries.push({
+        node,
+        titleTrigrams,
+        bodyTrigrams,
+        titleTokens,
+        bodyTokens,
+        titleFreq,
+        bodyFreq,
+        totalTokens: bodyTokens.length,
+      });
+    }
+  }
+
+  private idf(term: string): number {
+    const docFreq = this.df.get(term) ?? 0;
+    if (docFreq === 0) return 0;
+    return Math.log((this.totalDocs - docFreq + 0.5) / (docFreq + 0.5) + 1);
+  }
+
+  bm25Score(entry: IndexEntry, queryTokens: string[], k1 = 1.5, b = 0.75): number {
+    const avgDl = this.totalDocs > 0 ? this.entries.reduce((s, e) => s + e.totalTokens, 0) / this.totalDocs : 1;
+    let score = 0;
+
+    for (const term of queryTokens) {
+      const tfTitle = entry.titleFreq.get(term) ?? 0;
+      const tfBody = entry.bodyFreq.get(term) ?? 0;
+      const idf = this.idf(term);
+      if (idf === 0) continue;
+
+      const titleScore = (tfTitle * (k1 + 1)) / (tfTitle + k1 * (1 - b + b * (entry.titleTokens.length / (avgDl || 1))));
+      const bodyScore = (tfBody * (k1 + 1)) / (tfBody + k1 * (1 - b + b * (entry.totalTokens / (avgDl || 1))));
+      score += idf * (titleScore * 3 + bodyScore);
+    }
+    return score;
+  }
+
+  search(query: string): VaultSearchResult[] {
+    const q = query.toLowerCase().trim();
+    if (!q || this.entries.length === 0) return [];
+
+    const queryTrigrams = buildTrigrams(q);
+    const queryTokens = tokenize(q);
+
+    const scored: { entry: IndexEntry; score: number; matchedField: string }[] = [];
+
+    for (const entry of this.entries) {
+      let score = 0;
+      let matchedField = "";
+
+      // Exact title match
+      if (entry.node.title.toLowerCase() === q) {
+        score = 100;
+        matchedField = "title:exact";
+      }
+      // Exact ID match
+      else if (entry.node.frontmatter.anilistId && String(entry.node.frontmatter.anilistId) === q) {
+        score = 100;
+        matchedField = "anilistId";
+      }
+      // Title contains query
+      else if (entry.node.title.toLowerCase().includes(q)) {
+        score = 80 + (q.length / entry.node.title.length) * 15;
+        matchedField = "title:contains";
+      }
+      // Frontmatter name contains
+      else if (entry.node.frontmatter.name && String(entry.node.frontmatter.name).toLowerCase().includes(q)) {
+        score = 75;
+        matchedField = "frontmatter:name";
+      }
+      // Native name contains
+      else if (entry.node.frontmatter.nativeName && String(entry.node.frontmatter.nativeName).toLowerCase().includes(q)) {
+        score = 70;
+        matchedField = "nativeName";
+      }
+
+      // Trigram similarity
+      if (score < 70) {
+        const titleTrigramSim = jaccard(queryTrigrams, entry.titleTrigrams);
+        const bodyTrigramSim = jaccard(queryTrigrams, entry.bodyTrigrams);
+        const trigramScore = Math.max(titleTrigramSim, bodyTrigramSim) * 60;
+        if (trigramScore > score) {
+          score = trigramScore;
+          matchedField = titleTrigramSim > bodyTrigramSim ? "trigram:title" : "trigram:body";
+        }
+      }
+
+      // BM25 scoring
+      if (queryTokens.length > 0 && score < 70) {
+        const bm25 = this.bm25Score(entry, queryTokens);
+        if (bm25 > 0) {
+          const normalizedBm25 = Math.min(60, bm25 * 10);
+          if (normalizedBm25 > score) {
+            score = normalizedBm25;
+            matchedField = "bm25";
+          }
+        }
+      }
+
+      // Fuzzy fallback
+      if (score < 10 && q.length >= 3) {
+        const fuzzyResult = this.fuzzySearch(entry.node, q);
+        if (fuzzyResult.score > 0) {
+          score = fuzzyResult.score;
+          matchedField = fuzzyResult.field;
+        }
+      }
+
+      if (score > 0) {
+        scored.push({ entry, score, matchedField });
+      }
+    }
+
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, 20).map(s => ({ node: s.entry.node, score: s.score, matchedField: s.matchedField }));
+  }
+
+  private fuzzySearch(node: VaultNode, query: string): { score: number; field: string } {
+    const fields = [
+      { text: node.title.toLowerCase(), weight: 40, field: "title" },
+      { text: String(node.frontmatter.name ?? "").toLowerCase(), weight: 35, field: "name" },
+      { text: String(node.frontmatter.nativeName ?? "").toLowerCase(), weight: 30, field: "nativeName" },
+    ];
+
+    let best = 0;
+    let bestField = "";
+
+    for (const f of fields) {
+      if (!f.text) continue;
+      // Subsequence match
+      let tIdx = 0, qIdx = 0;
+      while (tIdx < f.text.length && qIdx < query.length) {
+        if (f.text[tIdx] === query[qIdx]) qIdx++;
+        tIdx++;
+      }
+      if (qIdx === query.length) {
+        const subScore = f.weight * 0.6;
+        if (subScore > best) { best = subScore; bestField = f.field; }
+      }
+    }
+
+    return { score: best, field: bestField };
+  }
+}
+
 export class VaultContext {
   private app: App;
   private basePath: string;
   private nodes: VaultNode[] = [];
   private loaded = false;
+  private index: SearchIndex | null = null;
 
   constructor(app: App, basePath: string) {
     this.app = app;
@@ -44,6 +255,10 @@ export class VaultContext {
       if (node) this.nodes.push(node);
     }
     this.loaded = true;
+
+    // Build search index after loading all nodes
+    this.index = new SearchIndex();
+    this.index.build(this.nodes);
   }
 
   private getAllMarkdownFiles(folder: any): TFile[] {
@@ -85,10 +300,8 @@ export class VaultContext {
     let currentObj: Record<string, unknown> | null = null;
 
     for (const line of match[1].split(/\r?\n/)) {
-      // Skip empty lines
       if (!line.trim()) continue;
 
-      // Check if line is indented (nested key)
       const indentMatch = line.match(/^(\s+)(\S.*)/);
       if (indentMatch && currentParent && currentObj) {
         const nested = indentMatch[2];
@@ -97,25 +310,18 @@ export class VaultContext {
           const key = nested.slice(0, colonIdx).trim();
           let value: unknown = nested.slice(colonIdx + 1).trim();
           if (typeof value === "string") {
-            const v = value as string;
-            if (v.startsWith("'") && v.endsWith("'")) value = v.slice(1, -1);
-            else if (v.startsWith('"') && v.endsWith('"')) value = v.slice(1, -1);
-            else if (v === "true") value = true;
-            else if (v === "false") value = false;
-            else if (/^-?\d+$/.test(v)) value = Number(v);
+            value = this.parseYamlValue(value);
           }
           currentObj[key] = value;
         }
         continue;
       }
 
-      // Top-level key
       const colonIdx = line.indexOf(":");
       if (colonIdx > 0) {
         const key = line.slice(0, colonIdx).trim();
         let value: unknown = line.slice(colonIdx + 1).trim();
 
-        // If value is empty, this might be a parent for nested keys
         if (value === "") {
           currentParent = key;
           currentObj = {};
@@ -123,23 +329,35 @@ export class VaultContext {
           continue;
         }
 
-        // Reset parent tracking
         currentParent = null;
         currentObj = null;
 
         if (typeof value === "string") {
-          const v = value as string;
-          if (v.startsWith("'") && v.endsWith("'")) value = v.slice(1, -1);
-          else if (v.startsWith('"') && v.endsWith('"')) value = v.slice(1, -1);
-          else if (v === "true") value = true;
-          else if (v === "false") value = false;
-          else if (/^-?\d+$/.test(v)) value = Number(v);
+          value = this.parseYamlValue(value);
         }
         fm[key] = value;
       }
     }
     const body = content.slice(match[0].length).trim();
     return { frontmatter: fm, body };
+  }
+
+  private parseYamlValue(value: string): unknown {
+    // Inline array: [a, b, c]
+    if (value.startsWith("[") && value.endsWith("]")) {
+      const inner = value.slice(1, -1).trim();
+      if (!inner) return [];
+      return inner.split(",").map(s => s.trim().replace(/^['"]|['"]$/g, ""));
+    }
+    // Quoted string
+    if (value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1);
+    if (value.startsWith('"') && value.endsWith('"')) return value.slice(1, -1);
+    // Boolean
+    if (value === "true") return true;
+    if (value === "false") return false;
+    // Number
+    if (/^-?\d+$/.test(value)) return Number(value);
+    return value;
   }
 
   private extractTitle(fm: Record<string, unknown>, body: string): string {
@@ -160,142 +378,8 @@ export class VaultContext {
   }
 
   search(query: string): VaultSearchResult[] {
-    const q = query.toLowerCase().trim();
-    if (!q) return [];
-
-    const stopWords = new Set([
-      "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are", "as", "at",
-      "be", "because", "been", "before", "being", "below", "between", "both", "but", "by",
-      "did", "do", "does", "doing", "down", "during", "each", "few", "for", "from", "further",
-      "had", "has", "have", "having", "he", "her", "here", "hers", "him", "his", "how",
-      "i", "if", "in", "into", "is", "it", "its", "me", "more", "most", "my", "myself",
-      "no", "nor", "not", "of", "off", "on", "once", "only", "or", "other", "our", "ours", "ourselves", "out", "over", "own",
-      "same", "she", "should", "so", "some", "such", "than", "that", "the", "their", "theirs", "them", "themselves", "then", "there", "these", "they", "this", "those", "through", "to", "too", "under", "until", "up", "very", "was", "we", "were", "what", "when", "where", "which", "while", "who", "whom", "why", "with", "you", "your", "yours", "yourself", "yourselves",
-      "name", "author", "creator", "writer", "artist", "illustrator", "score", "tell", "info", "information", "list", "show", "details", "find", "search", "give", "who is", "what is", "tell me"
-    ]);
-
-    const words = q.split(/[\s,.\-!?()]+/).filter(w => w.length >= 2 && !stopWords.has(w));
-    const keywords = words.length > 0 ? words : q.split(/\s+/).filter(Boolean);
-
-    const results: VaultSearchResult[] = [];
-    for (const node of this.nodes) {
-      let bestScore = 0;
-      let matchedField = "";
-
-      // 1. Direct whole-phrase matches (highest priority)
-      if (node.title.toLowerCase().includes(q)) {
-        bestScore = Math.max(bestScore, node.title.toLowerCase() === q ? 100 : 80);
-        matchedField = "title";
-      }
-
-      const fmName = node.frontmatter.name;
-      if (fmName && String(fmName).toLowerCase().includes(q)) {
-        bestScore = Math.max(bestScore, 90);
-        matchedField = "frontmatter:name";
-      }
-
-      if (node.frontmatter.nativeName && String(node.frontmatter.nativeName).toLowerCase().includes(q)) {
-        bestScore = Math.max(bestScore, 85);
-        matchedField = "nativeName";
-      }
-
-      const fmTitle = node.frontmatter.title;
-      if (fmTitle && typeof fmTitle === "object") {
-        const t = fmTitle as Record<string, unknown>;
-        for (const [, val] of Object.entries(t)) {
-          if (typeof val === "string" && val.toLowerCase().includes(q)) {
-            bestScore = Math.max(bestScore, 85);
-            matchedField = "frontmatter:title";
-          }
-        }
-      }
-
-      if (node.frontmatter.anilistId && String(node.frontmatter.anilistId) === q) {
-        bestScore = Math.max(bestScore, 100);
-        matchedField = "anilistId";
-      }
-
-      if (node.body.toLowerCase().includes(q)) {
-        bestScore = Math.max(bestScore, 30);
-        matchedField = matchedField || "body";
-      }
-
-      // 2. Keyword-based matching (for conversational queries with fuzzy scoring)
-      let keywordScore = 0;
-      let matchedKeywordsCount = 0;
-      const matchedFieldsList: string[] = [];
-
-      for (const word of keywords) {
-        let bestWordScore = 0;
-        let bestWordField = "";
-
-        const titleFuzzy = fuzzyScore(node.title, word);
-        if (titleFuzzy > bestWordScore) {
-          bestWordScore = titleFuzzy * 40;
-          bestWordField = "title";
-        }
-
-        if (fmName) {
-          const nameFuzzy = fuzzyScore(String(fmName), word);
-          if (nameFuzzy > bestWordScore) {
-            bestWordScore = nameFuzzy * 35;
-            bestWordField = "name";
-          }
-        }
-
-        if (node.frontmatter.nativeName) {
-          const nativeFuzzy = fuzzyScore(String(node.frontmatter.nativeName), word);
-          if (nativeFuzzy > bestWordScore) {
-            bestWordScore = nativeFuzzy * 30;
-            bestWordField = "nativeName";
-          }
-        }
-
-        if (fmTitle && typeof fmTitle === "object") {
-          const t = fmTitle as Record<string, unknown>;
-          for (const [, val] of Object.entries(t)) {
-            if (typeof val === "string") {
-              const valFuzzy = fuzzyScore(val, word);
-              if (valFuzzy > bestWordScore) {
-                bestWordScore = valFuzzy * 30;
-                bestWordField = "titleObj";
-              }
-            }
-          }
-        }
-
-        if (node.body.toLowerCase().includes(word)) {
-          if (10 > bestWordScore) {
-            bestWordScore = 10;
-            bestWordField = "body";
-          }
-        }
-
-        if (bestWordScore > 0) {
-          keywordScore += bestWordScore;
-          matchedKeywordsCount++;
-          matchedFieldsList.push(bestWordField);
-        }
-      }
-
-      if (keywords.length > 0 && matchedKeywordsCount > 0) {
-        const matchRatio = matchedKeywordsCount / keywords.length;
-        // Boost score based on keyword match ratio
-        const finalKeywordScore = keywordScore * matchRatio;
-        // Cap keyword score to 95 so exact full matches still take priority
-        bestScore = Math.max(bestScore, Math.min(95, finalKeywordScore));
-        if (matchedFieldsList.length > 0 && !matchedField) {
-          matchedField = `keywords(${Array.from(new Set(matchedFieldsList)).slice(0, 2).join(",")})`;
-        }
-      }
-
-      if (bestScore > 0) {
-        results.push({ node, score: bestScore, matchedField });
-      }
-    }
-
-    results.sort((a, b) => b.score - a.score);
-    return results.slice(0, 20);
+    if (!this.index) return [];
+    return this.index.search(query);
   }
 
   getAllMedia(): VaultNode[] {
@@ -330,6 +414,7 @@ export class VaultContext {
       if (n.frontmatter.episodes != null) lines.push(`  Episodes: ${n.frontmatter.episodes}`);
       if (n.frontmatter.chapters != null) lines.push(`  Chapters: ${n.frontmatter.chapters} | Volumes: ${n.frontmatter.volumes ?? "?"}`);
       if (n.frontmatter.genres) lines.push(`  Genres: ${Array.isArray(n.frontmatter.genres) ? n.frontmatter.genres.join(", ") : n.frontmatter.genres}`);
+      if (n.frontmatter.language) lines.push(`  Language: ${n.frontmatter.language}`);
 
       const bodyLines = n.body.split("\n");
       let inSection = "";
@@ -340,7 +425,7 @@ export class VaultContext {
         }
       }
 
-      lines.push(`  Matched via: ${r.matchedField}`);
+      lines.push(`  Matched via: ${r.matchedField} (score: ${r.score.toFixed(1)})`);
       parts.push(lines.join("\n"));
       parts.push("---");
     }
@@ -355,50 +440,18 @@ export class VaultContext {
   }
 }
 
+// Keep fuzzyScore for context.ts compatibility
 export function fuzzyScore(target: string, query: string): number {
   const t = target.toLowerCase();
   const q = query.toLowerCase();
   if (t === q) return 1.0;
   if (t.includes(q)) return 0.8 + (q.length / t.length) * 0.15;
 
-  let tIdx = 0;
-  let qIdx = 0;
+  let tIdx = 0, qIdx = 0;
   while (tIdx < t.length && qIdx < q.length) {
-    if (t[tIdx] === q[qIdx]) {
-      qIdx++;
-    }
+    if (t[tIdx] === q[qIdx]) qIdx++;
     tIdx++;
   }
-  if (qIdx === q.length) {
-    return 0.6;
-  }
-
-  if (q.length >= 4) {
-    const dist = levenshteinDistance(q, t);
-    const maxLen = Math.max(q.length, t.length);
-    const score = 1 - dist / maxLen;
-    if (score > 0.7) return score * 0.5;
-  }
-
+  if (qIdx === q.length) return 0.6;
   return 0;
-}
-
-export function levenshteinDistance(a: string, b: string): number {
-  const matrix = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
-  for (let i = 0; i <= a.length; i++) matrix[i][0] = i;
-  for (let j = 0; j <= b.length; j++) matrix[0][j] = j;
-  for (let i = 1; i <= a.length; i++) {
-    for (let j = 1; j <= b.length; j++) {
-      if (a[i - 1] === b[j - 1]) {
-        matrix[i][j] = matrix[i - 1][j - 1];
-      } else {
-        matrix[i][j] = Math.min(
-          matrix[i - 1][j] + 1,
-          matrix[i][j - 1] + 1,
-          matrix[i - 1][j - 1] + 1
-        );
-      }
-    }
-  }
-  return matrix[a.length][b.length];
 }

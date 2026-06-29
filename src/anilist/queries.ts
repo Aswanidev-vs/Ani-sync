@@ -128,6 +128,20 @@ export const MEDIA_DETAILS_BATCH_QUERY = `
             node { id type title { romaji english userPreferred } }
           }
         }
+        characters(perPage: 50, sort: ROLE) {
+          pageInfo { hasNextPage }
+          edges {
+            role
+            voiceActors(language: JAPANESE) {
+              id name { full native } language image { large medium }
+            }
+            node {
+              id name { full native } image { large medium }
+              description(asHtml: false) siteUrl gender age
+              dateOfBirth { year month day }
+            }
+          }
+        }
       }
     }
   }

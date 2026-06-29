@@ -218,6 +218,22 @@ function collectFromDetail(
   }
   for (const edge of detail.characters?.edges ?? []) {
     if (!edge?.node) continue;
+
+    for (const va of edge.voiceActors ?? []) {
+      if (!va) continue;
+      if (!voiceActors.has(va.id)) {
+        voiceActors.set(va.id, {
+          id: va.id,
+          name: va.name?.full ?? "(unknown)",
+          native: va.name?.native,
+          language: va.language,
+          imageLarge: va.image?.large ?? undefined,
+          imageMedium: va.image?.medium ?? undefined,
+          siteUrl: undefined,
+        });
+      }
+    }
+
     if (!characters.has(edge.node.id)) {
       const desc = edge.node.description;
       characters.set(edge.node.id, {
@@ -231,21 +247,31 @@ function collectFromDetail(
         age: edge.node.age,
         dateOfBirth: formatFuzzyDate(edge.node.dateOfBirth),
         description: desc ? stripHtml(desc) : undefined,
-        voiceActors: [],
-      });
-    }
-    for (const va of edge.voiceActors ?? []) {
-      if (!va) continue;
-      if (!voiceActors.has(va.id)) {
-        voiceActors.set(va.id, {
+        voiceActors: (edge.voiceActors ?? []).filter(Boolean).map(va => ({
           id: va.id,
           name: va.name?.full ?? "(unknown)",
-          native: va.name?.native,
-          language: va.language,
-          imageLarge: va.image?.large ?? undefined,
-          imageMedium: va.image?.medium ?? undefined,
-          siteUrl: undefined,
-        });
+          native: va.name?.native ?? null,
+          language: va.language ?? null,
+          imageLarge: va.image?.large ?? null,
+          imageMedium: va.image?.medium ?? null,
+          siteUrl: null,
+        })),
+      });
+    } else {
+      const ch = characters.get(edge.node.id)!;
+      for (const va of edge.voiceActors ?? []) {
+        if (!va) continue;
+        if (!ch.voiceActors.some(v => v.id === va.id)) {
+          ch.voiceActors.push({
+            id: va.id,
+            name: va.name?.full ?? "(unknown)",
+            native: va.name?.native ?? null,
+            language: va.language ?? null,
+            imageLarge: va.image?.large ?? null,
+            imageMedium: va.image?.medium ?? null,
+            siteUrl: null,
+          });
+        }
       }
     }
   }
@@ -398,20 +424,12 @@ export function buildArtifacts(built: BuiltArtifacts, syncedAt: string): NoteArt
   for (const p of built.staff.values()) artifacts.push(buildStaffArtifact(p, syncedAt));
   for (const t of built.tags.values()) artifacts.push(buildTagArtifact(t, syncedAt));
 
-  const mediaByCharId = new Map<number, { mediaId: number; mediaType: "ANIME" | "MANGA"; mediaTitle: string; role: string; vaIds: number[] }[]>();
   const mediaByStudioId = new Map<number, string[]>();
 
   for (const m of built.media) {
     const mediaTitle = pickTitle(m.title);
-    for (const c of m.characters) {
-      if (!mediaByCharId.has(c.id)) mediaByCharId.set(c.id, []);
-      mediaByCharId.get(c.id)!.push({
-        mediaId: m.mediaId,
-        mediaType: m.type,
-        mediaTitle,
-        role: c.role ?? "",
-        vaIds: c.voiceActors.map(va => va.id),
-      });
+    if (m.characters.length > 0) {
+      artifacts.push(buildMediaCharacterArtifact(m, built.characters, syncedAt));
     }
     for (const studio of m.studios) {
       if (!mediaByStudioId.has(studio.id)) mediaByStudioId.set(studio.id, []);
@@ -421,10 +439,6 @@ export function buildArtifacts(built: BuiltArtifacts, syncedAt: string): NoteArt
     }
   }
 
-  for (const c of built.characters.values()) {
-    const refs = mediaByCharId.get(c.id) ?? [];
-    artifacts.push(buildCharacterArtifact(c, refs, built.voiceActors, syncedAt));
-  }
   for (const s of built.studios.values()) {
     const works = mediaByStudioId.get(s.id) ?? [];
     artifacts.push(buildStudioArtifact(s, works, syncedAt));
@@ -511,7 +525,7 @@ export function buildMediaArtifact(note: MediaNote, titleSlug: string, syncedAt:
       const vaLinks = c.voiceActors.length
         ? ` (voiced by ${c.voiceActors.map(va => va.name).join(", ")})`
         : "";
-      body.push(`- [[Characters/${slugify(c.name)}|${c.name}]] — ${c.role ?? ""}${vaLinks}`);
+      body.push(`- [[Characters/${titleSlug}#${c.name}|${c.name}]] — ${c.role ?? ""}${vaLinks}`);
     }
     body.push("");
   }
@@ -626,87 +640,72 @@ export function buildTagArtifact(tag: TagArtifactData, syncedAt: string): NoteAr
   };
 }
 
-export function buildCharacterArtifact(
-  ch: CharacterArtifactData,
-  mediaRefs: { mediaId: number; mediaType: "ANIME" | "MANGA"; mediaTitle: string; role: string; vaIds: number[] }[],
-  voiceActors: Map<number, VoiceActorArtifactData>,
+export function buildMediaCharacterArtifact(
+  mediaNote: MediaNote,
+  characters: Map<number, CharacterArtifactData>,
   syncedAt: string,
 ): NoteArtifact {
-  const vaSet = new Set<number>();
-  for (const ref of mediaRefs) {
-    for (const vaId of ref.vaIds) vaSet.add(vaId);
-  }
-  const vaList: VoiceActorArtifactData[] = [];
-  for (const vaId of vaSet) {
-    const va = voiceActors.get(vaId);
-    if (va) vaList.push(va);
-  }
-
-  const tags = vaList.map(va => `voiceactor/${slugify(va.name)}`);
+  const title = pickTitle(mediaNote.title);
+  const titleSlug = slugify(title);
 
   const fm: Record<string, unknown> = {
-    anilistId: ch.id,
-    type: "CHARACTER",
-    name: ch.name,
-    nativeName: ch.native,
-    gender: ch.gender,
-    age: ch.age,
-    dateOfBirth: ch.dateOfBirth,
-    image: ch.imageLarge,
-    anilistUrl: ch.siteUrl,
+    mediaId: mediaNote.mediaId,
+    type: "MEDIA_CHARACTERS",
+    mediaTitle: title,
     syncedAt: SYNCED_AT_PLACEHOLDER,
-    tags,
   };
-  const body: string[] = [];
-  body.push(`# ${ch.name}`);
-  body.push("");
-  if (ch.imageLarge) {
-    body.push(`![character](${ch.imageLarge})`);
-    body.push("");
-  }
-  if (ch.native) body.push(`**Native:** ${ch.native}  `);
-  if (ch.gender) body.push(`**Gender:** ${ch.gender}  `);
-  if (ch.age) body.push(`**Age:** ${ch.age}  `);
-  if (ch.dateOfBirth) body.push(`**Birthday:** ${ch.dateOfBirth}  `);
-  if (ch.description) {
-    body.push("");
-    body.push(ch.description);
-    body.push("");
-  }
 
-  if (vaList.length) {
-    for (const va of vaList) {
-      body.push(`## Voice Actor: ${va.name}`);
+  const body: string[] = [];
+  body.push(`# ${title} — Characters`);
+  body.push("");
+
+  for (const c of mediaNote.characters) {
+    const ch = characters.get(c.id);
+    if (!ch) continue;
+
+    body.push(`## ${ch.name}`);
+    body.push("");
+    if (ch.imageLarge) {
+      body.push(`![${ch.name}](${ch.imageLarge})`);
       body.push("");
-      if (va.imageLarge) {
-        body.push(`![${va.name}](${va.imageLarge})`);
+    }
+    if (ch.native) body.push(`**Native:** ${ch.native}  `);
+    if (ch.gender) body.push(`**Gender:** ${ch.gender}  `);
+    if (ch.age) body.push(`**Age:** ${ch.age}  `);
+    if (ch.dateOfBirth) body.push(`**Birthday:** ${ch.dateOfBirth}  `);
+    body.push(`**Role:** ${c.role ?? ""}  `);
+    body.push(`[AniList](${ch.siteUrl ?? ""})  `);
+    body.push("");
+
+    if (ch.voiceActors.length) {
+      body.push("### Voice Actors");
+      body.push("");
+      for (const va of ch.voiceActors) {
+        if (va.imageLarge) {
+          body.push(`![${va.name}](${va.imageLarge})`);
+        }
+        body.push(`**${va.name}**  `);
+        if (va.native) body.push(`Native: ${va.native}  `);
+        if (va.language) body.push(`Language: ${va.language}  `);
         body.push("");
       }
-      if (va.native) body.push(`**Native:** ${va.native}  `);
-      if (va.language) body.push(`**Language:** ${va.language}  `);
+    }
+
+    if (ch.description) {
+      body.push(ch.description);
       body.push("");
     }
   }
 
-  if (mediaRefs.length) {
-    body.push("## Appearances");
-    body.push("");
-    for (const ref of mediaRefs) {
-      const folder = ref.mediaType === "ANIME" ? "Anime" : "Manga";
-      body.push(`- [[${folder}/${slugify(ref.mediaTitle)}|${ref.mediaTitle}]] — ${ref.role}`);
-    }
-    body.push("");
-  }
-  body.push(`[AniList](${ch.siteUrl ?? ""})`);
+  body.push(`[AniList - ${title}](${mediaNote.siteUrl ?? ""})`);
+
   return {
     folder: "Characters",
-    filename: `${slugify(ch.name)}.md`,
+    filename: `${titleSlug}.md`,
     body: renderFrontmatter(fm) + "\n" + body.join("\n"),
-    uniqueKey: `character:${ch.id}`,
+    uniqueKey: `media-characters:${mediaNote.mediaId}`,
   };
 }
-
-
 
 export function buildProfileArtifact(profile: ProfileData, syncedAt: string): NoteArtifact {
   const v = profile.viewer;

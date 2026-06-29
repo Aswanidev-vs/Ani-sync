@@ -204,7 +204,7 @@ export default class AnisyncPlugin extends Plugin {
     this.stopAutoSync();
     const ms = Math.max(30, this.settings.pollIntervalSeconds) * 1000;
     const id = window.setInterval(() => {
-      if (this.canSync()) {
+      if (this.canSync() && !this.syncEngine) {
         void this.runSync().catch(() => {});
       }
     }, ms);
@@ -308,13 +308,13 @@ export default class AnisyncPlugin extends Plugin {
     try {
       const stats = await this.syncEngine.run();
       this.settings.lastSyncAt = new Date().toISOString();
-      this.settings.lastSyncStats = `${stats.created} created, ${stats.updated} updated, ${stats.skipped} unchanged, ${stats.failed} failed`;
+      this.settings.lastSyncStats = `${stats.created} created, ${stats.updated} updated, ${stats.deleted} deleted, ${stats.skipped} unchanged, ${stats.failed} failed`;
       await this.saveAll();
       try { await this.applyGraphColors(); } catch {}
-      this.invalidateChatContext();
+      try { this.invalidateChatContext(); } catch {}
       this.syncPopup.show("Sync complete!", 100);
       setTimeout(() => this.syncPopup.hide(), 2000);
-      new Notice(`Ani-sync: done — ${stats.created} created, ${stats.updated} updated, ${stats.skipped} skipped, ${stats.failed} failed`, 6000);
+      new Notice(`Ani-sync: done — ${stats.created} created, ${stats.updated} updated, ${stats.deleted} deleted, ${stats.skipped} skipped, ${stats.failed} failed`, 6000);
     } catch (e) {
       const msg = (e as Error)?.message ?? String(e);
       this.syncPopup.show(`Failed: ${msg}`, 100);
@@ -383,8 +383,14 @@ export default class AnisyncPlugin extends Plugin {
       },
       async write(path: string, content: string): Promise<void> {
         const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
-        if (dir && dir !== "" && !(await adapter.exists(dir))) {
-          await vault.createFolder(dir);
+        if (dir && dir !== "") {
+          try {
+            if (!(await adapter.exists(dir))) {
+              await vault.createFolder(dir);
+            }
+          } catch {
+            // concurrent write created the folder already — proceed
+          }
         }
         const existing = vault.getAbstractFileByPath(path);
         if (existing instanceof TFile) {

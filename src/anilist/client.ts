@@ -12,10 +12,9 @@ import {
 import type { AnilistCharacterEdge } from "../types";
 
 const ENDPOINT = "https://graphql.anilist.co";
-const MIN_INTERVAL_MS = 2000;
-const MAX_INTERVAL_MS = 10000;
-const LOW_CREDITS_THRESHOLD = 15;
-const CRITICAL_CREDITS_THRESHOLD = 5;
+const MIN_INTERVAL_MS = 700;
+const MAX_INTERVAL_MS = 2000;
+const SUCCESS_BACKOFF_STEP = 10;
 const BATCH_PAGE_SIZE = 50;
 const BATCH_PAGE_SAFETY_CAP = 50;
 
@@ -33,11 +32,10 @@ export interface AnilistClientOptions {
 export class AnilistClient {
   private token: string;
   private nextAllowedAt = 0;
+  private currentInterval = MIN_INTERVAL_MS;
+  private successSinceLast429 = 0;
   private onLog?: (message: string) => void;
   private onRetry?: (info: RetryInfo) => void;
-  private remaining = 90;
-  private limit = 90;
-  private rateLimitedUntil = 0;
 
   constructor(token: string, options: AnilistClientOptions = {}) {
     this.token = token;
@@ -59,17 +57,8 @@ export class AnilistClient {
         body: JSON.stringify({ query, variables: variables ?? {} }),
       });
 
-      const h = response.headers ?? {};
-      const limitVal = Number(h["x-ratelimit-limit"]);
-      if (!isNaN(limitVal)) this.limit = limitVal;
-      const remainingVal = Number(h["x-ratelimit-remaining"]);
-      this.remaining = isNaN(remainingVal) ? this.remaining - 1 : remainingVal;
-
       if (response.status === 429) {
-        const ra = Number(h["retry-after"] ?? "60");
-        const reset = Number(h["x-ratelimit-reset"] ?? "0");
-        this.remaining = 0;
-        if (reset > 0) this.rateLimitedUntil = reset * 1000;
+        const ra = Number(response.headers["retry-after"] ?? "60");
         const err = new Error("rate-limited") as Error & { status: number; retryAfter: number };
         err.status = 429;
         err.retryAfter = Number.isFinite(ra) ? ra : 60;
@@ -96,23 +85,8 @@ export class AnilistClient {
 
   private async reserveSlot(): Promise<void> {
     const now = Date.now();
-
-    if (now < this.rateLimitedUntil) {
-      const wait = this.rateLimitedUntil - now;
-      await sleep(wait);
-      this.rateLimitedUntil = 0;
-    }
-
-    let interval = MIN_INTERVAL_MS;
-    if (this.remaining <= CRITICAL_CREDITS_THRESHOLD) {
-      interval = MAX_INTERVAL_MS;
-    } else if (this.remaining <= LOW_CREDITS_THRESHOLD) {
-      const ratio = (LOW_CREDITS_THRESHOLD - this.remaining) / (LOW_CREDITS_THRESHOLD - CRITICAL_CREDITS_THRESHOLD);
-      interval = MIN_INTERVAL_MS + (MAX_INTERVAL_MS - MIN_INTERVAL_MS) * ratio;
-    }
-
     const reservedAt = Math.max(now, this.nextAllowedAt);
-    this.nextAllowedAt = reservedAt + interval;
+    this.nextAllowedAt = reservedAt + this.currentInterval;
     const wait = reservedAt - now;
     if (wait > 0) await sleep(wait);
   }
@@ -120,15 +94,22 @@ export class AnilistClient {
   private async runWithRetry<T>(fn: () => Promise<T>, attempt = 1): Promise<T> {
     await this.reserveSlot();
     try {
-      return await fn();
+      const result = await fn();
+      this.successSinceLast429 += 1;
+      if (this.successSinceLast429 >= SUCCESS_BACKOFF_STEP && this.currentInterval > MIN_INTERVAL_MS) {
+        this.currentInterval = Math.max(MIN_INTERVAL_MS, Math.floor(this.currentInterval / 2));
+        this.successSinceLast429 = 0;
+      }
+      return result;
     } catch (err) {
       const e = err as Error & { status?: number; retryAfter?: number };
       if (e?.status === 429 && attempt <= 3) {
         const waitMs = (e.retryAfter ?? 60) * 1000;
+        this.currentInterval = Math.min(MAX_INTERVAL_MS, this.currentInterval * 2);
+        this.successSinceLast429 = 0;
         this.onRetry?.({ attempt, waitMs, reason: "rate-limited" });
         await sleep(waitMs);
-        this.remaining = this.limit;
-        this.nextAllowedAt = Date.now() + MIN_INTERVAL_MS;
+        this.nextAllowedAt = Date.now() + this.currentInterval;
         return this.runWithRetry(fn, attempt + 1);
       }
       if (e?.status && e.status >= 500 && attempt <= 3) {

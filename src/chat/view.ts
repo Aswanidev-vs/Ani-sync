@@ -77,7 +77,9 @@ export class ChatView extends ItemView {
       this.lastOutputDir = outputDir;
     }
     await this.vaultContext.load();
-    this.showWelcome();
+    if (!this.hasChatMessages()) {
+      this.showWelcome();
+    }
   }
 
   async onClose(): Promise<void> {
@@ -87,6 +89,9 @@ export class ChatView extends ItemView {
   }
 
   private showWelcome(loadingText?: string): void {
+    if (this.hasChatMessages()) {
+      return;
+    }
     this.messagesEl.empty();
     const welcome = this.messagesEl.createDiv({ cls: "anisync-chat-welcome" });
     welcome.style.cssText = "display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 32px 16px;";
@@ -279,7 +284,11 @@ export class ChatView extends ItemView {
 
   private removeWelcome(): void {
     const w = this.messagesEl.querySelector(".anisync-chat-welcome");
-    if (w) this.messagesEl.empty();
+    w?.remove();
+  }
+
+  private hasChatMessages(): boolean {
+    return !!this.messagesEl.querySelector(".anisync-chat-message");
   }
 
   private scrollDown(): void {

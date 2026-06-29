@@ -183,6 +183,18 @@ export class AnilistClient {
       page += 1;
       if (page > 50) break;
     }
+
+    // Filter to Japanese VAs per character; fall back to all VAs if none tagged Japanese
+    for (const edge of allEdges) {
+      if (edge.voiceActors && edge.voiceActors.length > 0) {
+        const japanese = edge.voiceActors.filter(va => va?.language === "Japanese");
+        if (japanese.length > 0) {
+          edge.voiceActors = japanese;
+        }
+        // else keep all VAs as-is (fallback)
+      }
+    }
+
     return allEdges;
   }
 }

@@ -45,7 +45,8 @@ export class VaultContext {
       const fm = meta?.frontmatter;
       if (!fm?.anilistId) continue;
 
-      const type = fm.type as string;
+      const type = fm.type;
+      if (typeof type !== "string") continue;
       const normalizedType = TYPE_MAP[type] ?? type.toLowerCase() as VaultNode["type"];
       const title = this.extractTitle(fm, meta?.headings);
 

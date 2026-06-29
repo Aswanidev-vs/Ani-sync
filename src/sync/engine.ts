@@ -163,10 +163,11 @@ export class SyncEngine {
     for (const m of fetchedManga) if (m) details.set(`MANGA:${m.id}`, m);
 
     const allFetched = [...fetchedAnime, ...fetchedManga].filter(Boolean) as MediaDetail[];
-    if (allFetched.length > 0) {
-      onProgress(`Fetching all characters for ${allFetched.length} media...`, 32);
+    const needsCharacterRefresh = [...details.values()].filter((m) => this.needsCharacterRefresh(m));
+    if (needsCharacterRefresh.length > 0) {
+      onProgress(`Fetching all characters for ${needsCharacterRefresh.length} media...`, 32);
       let charTotal = 0;
-      await pMapLimit(allFetched, 4, async (m) => {
+      await pMapLimit(needsCharacterRefresh, 4, async (m) => {
         if (this.cancelled) return;
         const edges = await this.anilist.fetchAllCharacters(m.id, m.type);
         m.characters = { edges };
@@ -219,6 +220,18 @@ export class SyncEngine {
 
   cancelledStats(): SyncStats {
     return { created: 0, updated: 0, skipped: 0, failed: 0, planned: 0, cancelled: true };
+  }
+
+  private needsCharacterRefresh(detail: MediaDetail): boolean {
+    const edges = detail.characters?.edges;
+    if (!Array.isArray(edges) || edges.length === 0) {
+      return true;
+    }
+
+    return edges.some((edge) => {
+      if (!edge?.node?.id) return true;
+      return !Array.isArray(edge.voiceActors);
+    });
   }
 
   private async prepareArtifacts(artifacts: ReturnType<typeof buildArtifacts>): Promise<PreparedArtifact[]> {

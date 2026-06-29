@@ -336,6 +336,13 @@ function formatFuzzyDate(d: { year?: number | null; month?: number | null; day?:
   return `${d.year}-${m}-${day}`;
 }
 
+function normalizePersonName(name: string | null | undefined): string {
+  return (name ?? "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function renderFrontmatter(obj: Record<string, unknown>): string {
   const lines = ["---"];
   for (const [k, v] of Object.entries(obj)) {
@@ -392,7 +399,13 @@ export function buildArtifacts(built: BuiltArtifacts, syncedAt: string): NoteArt
   for (const p of built.staff.values()) artifacts.push(buildStaffArtifact(p, syncedAt));
   for (const t of built.tags.values()) artifacts.push(buildTagArtifact(t, syncedAt));
 
-  const mediaByCharId = new Map<number, { mediaId: number; mediaType: "ANIME" | "MANGA"; mediaTitle: string; role: string; vaNames: string[] }[]>();
+  const mediaByCharId = new Map<number, {
+    mediaId: number;
+    mediaType: "ANIME" | "MANGA";
+    mediaTitle: string;
+    role: string;
+    voiceActors: { id: number; name: string }[];
+  }[]>();
   const mediaByStudioId = new Map<number, string[]>();
 
   for (const m of built.media) {
@@ -404,7 +417,7 @@ export function buildArtifacts(built: BuiltArtifacts, syncedAt: string): NoteArt
         mediaType: m.type,
         mediaTitle,
         role: c.role ?? "",
-        vaNames: c.voiceActors.map(va => va.name),
+        voiceActors: c.voiceActors.map((va) => ({ id: va.id, name: va.name })),
       });
     }
     for (const studio of m.studios) {
@@ -418,10 +431,25 @@ export function buildArtifacts(built: BuiltArtifacts, syncedAt: string): NoteArt
   for (const c of built.characters.values()) {
     const refs = mediaByCharId.get(c.id) ?? [];
     const charVAs = new Map<number, VoiceActorArtifactData>();
+    const voiceActorsByName = new Map<string, VoiceActorArtifactData[]>();
+    for (const va of built.voiceActors.values()) {
+      const key = normalizePersonName(va.name);
+      if (!key) continue;
+      const existing = voiceActorsByName.get(key) ?? [];
+      existing.push(va);
+      voiceActorsByName.set(key, existing);
+    }
     for (const ref of refs) {
-      for (const va of built.voiceActors.values()) {
-        if (!charVAs.has(va.id) && ref.vaNames.includes(va.name)) {
+      for (const refVa of ref.voiceActors) {
+        const va = built.voiceActors.get(refVa.id);
+        if (va && !charVAs.has(va.id)) {
           charVAs.set(va.id, va);
+          continue;
+        }
+
+        const fallbackMatches = voiceActorsByName.get(normalizePersonName(refVa.name)) ?? [];
+        if (fallbackMatches.length === 1) {
+          charVAs.set(fallbackMatches[0].id, fallbackMatches[0]);
         }
       }
     }
@@ -630,7 +658,13 @@ export function buildTagArtifact(tag: TagArtifactData, syncedAt: string): NoteAr
 
 export function buildCharacterArtifact(
   ch: CharacterArtifactData,
-  mediaRefs: { mediaId: number; mediaType: "ANIME" | "MANGA"; mediaTitle: string; role: string; vaNames: string[] }[],
+  mediaRefs: {
+    mediaId: number;
+    mediaType: "ANIME" | "MANGA";
+    mediaTitle: string;
+    role: string;
+    voiceActors: { id: number; name: string }[];
+  }[],
   voiceActors: VoiceActorArtifactData[],
   syncedAt: string,
 ): NoteArtifact {
@@ -676,7 +710,12 @@ export function buildCharacterArtifact(
     body.push("");
     for (const [lang, vas] of vaByLang) {
       for (const va of vas) {
-        const mediaTitles = mediaRefs.filter(r => r.vaNames.includes(va.name)).map(r => r.mediaTitle);
+        const mediaTitles = mediaRefs
+          .filter((r) => r.voiceActors.some((refVa) =>
+            refVa.id === va.id ||
+            (!refVa.id && normalizePersonName(refVa.name) === normalizePersonName(va.name)),
+          ))
+          .map((r) => r.mediaTitle);
         const vaLine = va.imageLarge
           ? `![photo](${va.imageLarge}) **${va.name}**`
           : `**${va.name}**`;

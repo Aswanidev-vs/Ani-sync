@@ -170,7 +170,7 @@ export class AnilistClient {
   }
 
   async fetchAllCharacters(mediaId: number, type: "ANIME" | "MANGA"): Promise<AnilistCharacterEdge[]> {
-    const allEdges: AnilistCharacterEdge[] = [];
+    const edgeMap = new Map<string, AnilistCharacterEdge>();
     let page = 1;
     while (true) {
       const data = await this.request<{
@@ -178,11 +178,32 @@ export class AnilistClient {
       }>(CHARACTERS_PAGE_QUERY, { id: mediaId, type, page });
       const conn = data?.Media?.characters;
       if (!conn?.edges) break;
-      for (const e of conn.edges) if (e) allEdges.push(e);
+      for (const e of conn.edges) {
+        if (!e?.node?.id) continue;
+        const key = `${e.node.id}:${e.role ?? ""}`;
+        const existing = edgeMap.get(key);
+        if (!existing) {
+          edgeMap.set(key, {
+            ...e,
+            voiceActors: [...(e.voiceActors ?? [])],
+          });
+          continue;
+        }
+        const byId = new Map<number, NonNullable<AnilistCharacterEdge["voiceActors"]>[number]>();
+        for (const va of existing.voiceActors ?? []) {
+          if (va?.id != null) byId.set(va.id, va);
+        }
+        for (const va of e.voiceActors ?? []) {
+          if (va?.id != null && !byId.has(va.id)) byId.set(va.id, va);
+        }
+        existing.voiceActors = [...byId.values()];
+      }
       if (!conn.pageInfo?.hasNextPage) break;
       page += 1;
       if (page > 50) break;
     }
+
+    const allEdges = [...edgeMap.values()];
 
     // Filter to Japanese VAs per character; fall back to all VAs if none tagged Japanese
     for (const edge of allEdges) {

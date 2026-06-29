@@ -1,4 +1,5 @@
 import { slugify, pickTitle } from "./slugify";
+import sanitizeHtml from "sanitize-html";
 import type {
   AnilistCharacterEdge,
   AnilistRelationEdge,
@@ -367,10 +368,14 @@ function yamlScalar(v: unknown): string {
 
 function stripHtml(html: string | null | undefined): string {
   if (!html) return "";
-  return html
+  const withBreaks = html
     .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n\n")
-    .replace(/<[^>]+>/g, "")
+    .replace(/<\/p>/gi, "\n\n");
+  const textOnly = sanitizeHtml(withBreaks, {
+    allowedTags: [],
+    allowedAttributes: {},
+  });
+  return textOnly
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }

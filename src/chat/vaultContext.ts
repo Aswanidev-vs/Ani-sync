@@ -190,7 +190,7 @@ class SearchIndex {
     }
 
     scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, 30).map(s => ({ node: s.entry.node, score: s.score, matchedField: s.matchedField }));
+    return scored.slice(0, 20).map(s => ({ node: s.entry.node, score: s.score, matchedField: s.matchedField }));
   }
 }
 
@@ -250,7 +250,7 @@ export class VaultContext {
     try {
       const content = await this.app.vault.read(file);
       const { frontmatter, body } = this.parseFrontmatter(content);
-      if (!frontmatter?.anilistId && !frontmatter?.mediaId) return null;
+      if (!frontmatter?.anilistId && !frontmatter?.mediaId && frontmatter?.type !== "VOICE_ACTOR_INDEX") return null;
 
       const type = frontmatter.type as string;
       const normalizedType = TYPE_MAP[type] ?? type.toLowerCase() as VaultNode["type"];
@@ -353,7 +353,7 @@ export class VaultContext {
         }
         if (fallback.length > 0) {
           fallback.sort((a, b) => b.score - a.score);
-          return fallback.slice(0, 30);
+          return fallback.slice(0, 20);
         }
       }
     }
@@ -376,7 +376,7 @@ export class VaultContext {
       "---",
     ];
 
-    for (const r of results.slice(0, 15)) {
+    for (const r of results.slice(0, 10)) {
       const n = r.node;
       const lines: string[] = [];
       lines.push(`${n.type.toUpperCase()}: "${n.title}"`);
@@ -390,7 +390,7 @@ export class VaultContext {
       if (n.frontmatter.language) lines.push(`  Language: ${n.frontmatter.language}`);
       if (n.frontmatter.tags && Array.isArray(n.frontmatter.tags)) lines.push(`  Tags: ${n.frontmatter.tags.join(", ")}`);
 
-      // Include the full body content
+      // Full body content
       const bodyLines = n.body.split("\n");
       for (const line of bodyLines) {
         const trimmed = line.trim();

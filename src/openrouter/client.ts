@@ -53,6 +53,7 @@ export async function sendChat(
   const response: RequestUrlResponse = await requestUrl({
     url: CHAT_URL,
     method: "POST",
+    throw: false,
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
@@ -65,6 +66,16 @@ export async function sendChat(
       max_tokens: 2048,
     } satisfies { model: string; messages: OpenRouterMessage[]; stream: boolean; temperature: number; max_tokens: number }),
   });
+
+  if (response.status !== 200) {
+    let errorMsg = `OpenRouter returned HTTP ${response.status}`;
+    try {
+      const errBody = typeof response.json === "object" ? response.json : JSON.parse(response.text);
+      if (errBody?.error?.message) errorMsg = errBody.error.message;
+      else if (errBody?.error) errorMsg = JSON.stringify(errBody.error);
+    } catch { /* ignore */ }
+    throw new Error(errorMsg);
+  }
 
   const json = typeof response.json === "object" && response.json !== null
     ? response.json
@@ -87,6 +98,7 @@ export async function sendChatStream(
   const response: RequestUrlResponse = await requestUrl({
     url: CHAT_URL,
     method: "POST",
+    throw: false,
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
@@ -100,6 +112,16 @@ export async function sendChatStream(
       max_tokens: 2048,
     }),
   });
+
+  if (response.status !== 200) {
+    let errorMsg = `OpenRouter returned HTTP ${response.status}`;
+    try {
+      const errBody = typeof response.json === "object" ? response.json : JSON.parse(response.text);
+      if (errBody?.error?.message) errorMsg = errBody.error.message;
+      else if (errBody?.error) errorMsg = JSON.stringify(errBody.error);
+    } catch { /* ignore */ }
+    throw new Error(errorMsg);
+  }
 
   const text = response.text;
   let fullContent = "";

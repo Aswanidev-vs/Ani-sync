@@ -721,7 +721,7 @@ export function buildMediaCharacterArtifact(
     if (ch.age) body.push(`**Age:** ${ch.age}  `);
     if (ch.dateOfBirth) body.push(`**Birthday:** ${ch.dateOfBirth}  `);
     body.push(`**Role:** ${c.role ?? ""}  `);
-    body.push(`**Type:** ${mediaNote.type}  `);
+    body.push(`**Type:** ${mediaNote.type === 'ANIME' ? 'Anime' : 'Manga'}  `);
     body.push(`[AniList](${ch.siteUrl ?? ""})  `);
     body.push("");
 

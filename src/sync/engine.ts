@@ -34,6 +34,7 @@ export interface SyncEngineDeps {
 export interface SyncStats {
   created: number;
   updated: number;
+  deleted: number;
   skipped: number;
   failed: number;
   planned: number;
@@ -94,7 +95,7 @@ export class SyncEngine {
 
     if (changed.length === 0 && removed.length === 0) {
       onProgress("No changes detected. Cache-only update, skipping list fetches and writes.", 100);
-      const idleStats: SyncStats = { created: 0, updated: 0, skipped: unchanged.length, failed: 0, planned: 0 };
+      const idleStats: SyncStats = { created: 0, updated: 0, deleted: 0, skipped: unchanged.length, failed: 0, planned: 0 };
       const detailsMap = new Map(Object.entries(this.cache?.details ?? {}));
       await this.updateCache(newSummary, detailsMap);
       return idleStats;
@@ -102,7 +103,7 @@ export class SyncEngine {
 
     if (changed.length === 0 && removed.length > 0) {
       onProgress(`Only removals detected (${removed.length}). Skipping list fetches...`, 10);
-      const removalStats: SyncStats = { created: 0, updated: 0, skipped: 0, failed: 0, planned: 0 };
+      const removalStats: SyncStats = { created: 0, updated: 0, deleted: 0, skipped: 0, failed: 0, planned: 0 };
       await this.handleRemovals(removed, removalStats);
       if (this.cancelled) {
         return this.cancelledStats();
@@ -163,17 +164,17 @@ export class SyncEngine {
     for (const m of fetchedManga) if (m) details.set(`MANGA:${m.id}`, m);
 
     const allFetched = [...fetchedAnime, ...fetchedManga].filter(Boolean) as MediaDetail[];
-    const needsCharacterRefresh = [...details.values()].filter((m) => this.needsCharacterRefresh(m));
-    if (needsCharacterRefresh.length > 0) {
-      onProgress(`Fetching all characters for ${needsCharacterRefresh.length} media...`, 32);
-      let charTotal = 0;
-      await pMapLimit(needsCharacterRefresh, 4, async (m) => {
-        if (this.cancelled) return;
-        const edges = await this.anilist.fetchAllCharacters(m.id, m.type);
-        m.characters = { edges };
-        charTotal += edges.length;
+    if (allFetched.length > 0) {
+      const needsMorePages = allFetched.filter(m => {
+        const chars = m.characters as { pageInfo?: { hasNextPage: boolean } } | null | undefined;
+        return chars?.pageInfo?.hasNextPage;
       });
-      onProgress(`Characters fetched: ${charTotal} total`, 35);
+      await pMapLimit(needsMorePages, 4, async (m) => {
+        if (this.cancelled) return;
+        const rest = await this.anilist.fetchAllCharacters(m.id, m.type);
+        const existing = m.characters?.edges ?? [];
+        m.characters = { edges: [...existing, ...rest], pageInfo: { hasNextPage: false } } as typeof m.characters;
+      });
     }
 
     const missing = toFetch.filter((m) => !details.has(`${m.type}:${m.id}`));
@@ -208,6 +209,12 @@ export class SyncEngine {
     onProgress(`Removing ${removed.length} obsolete note(s)...`, 92);
     await this.handleRemovals(removed, stats);
 
+    onProgress("Cleaning up legacy Voice-Actor files...", 94);
+    await this.cleanupVoiceActorArtifacts(stats);
+
+    onProgress("Cleaning up legacy character files...", 94);
+    await this.cleanupLegacyCharacterArtifacts(stats);
+
     onProgress("Updating cache...", 95);
     await this.updateCache(newSummary, details);
 
@@ -219,19 +226,7 @@ export class SyncEngine {
   }
 
   cancelledStats(): SyncStats {
-    return { created: 0, updated: 0, skipped: 0, failed: 0, planned: 0, cancelled: true };
-  }
-
-  private needsCharacterRefresh(detail: MediaDetail): boolean {
-    const edges = detail.characters?.edges;
-    if (!Array.isArray(edges) || edges.length === 0) {
-      return true;
-    }
-
-    return edges.some((edge) => {
-      if (!edge?.node?.id) return true;
-      return !Array.isArray(edge.voiceActors);
-    });
+    return { created: 0, updated: 0, deleted: 0, skipped: 0, failed: 0, planned: 0, cancelled: true };
   }
 
   private async prepareArtifacts(artifacts: ReturnType<typeof buildArtifacts>): Promise<PreparedArtifact[]> {
@@ -250,7 +245,7 @@ export class SyncEngine {
     totalFolders: number,
     onWriteProgress?: (filesDone: number, totalFiles: number, foldersDone: number) => void,
   ): Promise<SyncStats> {
-    const stats: SyncStats = { created: 0, updated: 0, skipped: 0, failed: 0, planned: prepared.length };
+    const stats: SyncStats = { created: 0, updated: 0, deleted: 0, skipped: 0, failed: 0, planned: prepared.length };
     const noteHashes = { ...(this.cache?.noteHashes ?? {}) };
     const paths = this.cache?.paths ?? {};
     const newPaths = { ...paths };
@@ -288,12 +283,6 @@ export class SyncEngine {
       const cachedHash = noteHashes[a.uniqueKey];
 
       try {
-        // Delete old file if slug/path changed (rename handling)
-        const oldPath = paths[a.uniqueKey];
-        if (oldPath && oldPath !== vaultPath) {
-          try { await this.vault.delete(oldPath); } catch { /* already gone */ }
-        }
-
         if (cachedHash === noteHash) {
           stats.skipped += 1;
           noteHashes[a.uniqueKey] = noteHash;
@@ -360,7 +349,7 @@ export class SyncEngine {
       if (this.cancelled) return;
       try {
         await this.vault.delete(vaultPath);
-        stats.updated += 1;
+        stats.deleted += 1;
         delete noteHashes[k];
         delete newPaths[k];
         removed += 1;
@@ -376,6 +365,86 @@ export class SyncEngine {
 
     if (removed) this.onProgress?.(`  removed: ${removed}`);
     this.cache = { ...(this.cache ?? {}), noteHashes, paths: newPaths };
+  }
+
+  private async cleanupVoiceActorArtifacts(stats: SyncStats): Promise<void> {
+    const paths = this.cache?.paths ?? {};
+    const noteHashes = this.cache?.noteHashes ?? {};
+    const toDelete: { k: string; vaultPath: string }[] = [];
+
+    for (const [key, vaultPath] of Object.entries(paths)) {
+      if (key.startsWith("va:") && vaultPath.includes("/Voice-Actors/")) {
+        toDelete.push({ k: key, vaultPath });
+      }
+    }
+
+    if (toDelete.length === 0) return;
+
+    const deletedKeys: string[] = [];
+    let removed = 0;
+    await pMapLimit(toDelete, DELETE_CONCURRENCY, async ({ k, vaultPath }) => {
+      if (this.cancelled) return;
+      try {
+        await this.vault.delete(vaultPath);
+        stats.deleted += 1;
+        deletedKeys.push(k);
+        removed += 1;
+      } catch (e) {
+        if (/404/.test(String((e as Error)?.message))) {
+          deletedKeys.push(k);
+          removed += 1;
+        } else {
+          this.onLog?.(`  ! cleanup failed for ${vaultPath}: ${(e as Error)?.message ?? e}`);
+        }
+      }
+    });
+    for (const k of deletedKeys) {
+      delete noteHashes[k];
+      delete paths[k];
+    }
+
+    if (removed) this.onProgress?.(`  Voice-Actor clean-up: removed ${removed} file(s)`);
+    this.cache = { ...this.cache, noteHashes, paths };
+  }
+
+  private async cleanupLegacyCharacterArtifacts(stats: SyncStats): Promise<void> {
+    const paths = this.cache?.paths ?? {};
+    const noteHashes = this.cache?.noteHashes ?? {};
+    const toDelete: { k: string; vaultPath: string }[] = [];
+
+    for (const [key, vaultPath] of Object.entries(paths)) {
+      if (key.startsWith("character:") && vaultPath.startsWith("Characters/")) {
+        toDelete.push({ k: key, vaultPath });
+      }
+    }
+
+    if (toDelete.length === 0) return;
+
+    const deletedKeys: string[] = [];
+    let removed = 0;
+    await pMapLimit(toDelete, DELETE_CONCURRENCY, async ({ k, vaultPath }) => {
+      if (this.cancelled) return;
+      try {
+        await this.vault.delete(vaultPath);
+        stats.deleted += 1;
+        deletedKeys.push(k);
+        removed += 1;
+      } catch (e) {
+        if (/404/.test(String((e as Error)?.message))) {
+          deletedKeys.push(k);
+          removed += 1;
+        } else {
+          this.onLog?.(`  ! legacy character cleanup failed for ${vaultPath}: ${(e as Error)?.message ?? e}`);
+        }
+      }
+    });
+    for (const k of deletedKeys) {
+      delete noteHashes[k];
+      delete paths[k];
+    }
+
+    if (removed) this.onProgress?.(`  Legacy character clean-up: removed ${removed} file(s)`);
+    this.cache = { ...this.cache, noteHashes, paths };
   }
 
   private async updateCache(

@@ -3,8 +3,15 @@ import type { OpenRouterModel, OpenRouterMessage, ChatCompletionResponse, ModelL
 
 const MODELS_URL = "https://openrouter.ai/api/v1/models";
 const CHAT_URL = "https://openrouter.ai/api/v1/chat/completions";
+const MODELS_CACHE_TTL_MS = 60 * 60 * 1000;
+
+let cachedModels: { data: OpenRouterModel[]; fetchedAt: number } | null = null;
 
 export async function fetchModels(apiKey: string): Promise<OpenRouterModel[]> {
+  const now = Date.now();
+  if (cachedModels && (now - cachedModels.fetchedAt) < MODELS_CACHE_TTL_MS) {
+    return cachedModels.data;
+  }
   const response: RequestUrlResponse = await requestUrl({
     url: MODELS_URL,
     method: "GET",
@@ -17,8 +24,13 @@ export async function fetchModels(apiKey: string): Promise<OpenRouterModel[]> {
     ? response.json
     : JSON.parse(response.text);
 
+  if (json && typeof json === "object" && "error" in json) {
+    const err = (json as Record<string, unknown>).error as Record<string, unknown> | undefined;
+    throw new Error(err?.message as string ?? JSON.stringify(err));
+  }
+
   const body = json as ModelListResponse;
-  return (body.data ?? []).map((m) => ({
+  const models = (body.data ?? []).map((m) => ({
     id: m.id,
     name: m.name,
     description: m.description,
@@ -29,6 +41,8 @@ export async function fetchModels(apiKey: string): Promise<OpenRouterModel[]> {
     context_length: m.context_length,
     isFree: parseFloat(m.pricing.prompt) === 0 && parseFloat(m.pricing.completion) === 0,
   }));
+  cachedModels = { data: models, fetchedAt: now };
+  return models;
 }
 
 export async function sendChat(

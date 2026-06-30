@@ -265,32 +265,29 @@ export class AnisyncSettingTab extends PluginSettingTab {
       cls: "setting-item-description",
     });
 
-    for (const [key, label, defaultColor] of labels) {
-      const currentColor = colors[key] || defaultColor;
+    for (const [key, label, _default] of labels) {
       new Setting(containerEl)
         .setName(label)
-        .setDesc(`Graph node colour for ${label.toLowerCase()} notes`)
         .addColorPicker((picker) =>
           picker
-            .setValue(currentColor)
+            .setValue(colors[key])
             .onChange(async (value) => {
               colors[key] = value;
               await this.plugin.saveSettings();
-              this.plugin.applyGraphColors();
-            }),
-        )
-        .addButton((btn) =>
-          btn
-            .setButtonText("Reset")
-            .setTooltip(`Reset to ${defaultColor}`)
-            .onClick(async () => {
-              colors[key] = defaultColor;
-              await this.plugin.saveSettings();
-              this.plugin.applyGraphColors();
-              this.display();
+              await this.plugin.applyGraphColors();
             }),
         );
     }
+
+    new Setting(containerEl)
+      .setName("Apply to graph now")
+      .setDesc("Update graph.json with the colours above.")
+      .addButton((btn) =>
+        btn.setButtonText("Apply").setCta().onClick(async () => {
+          await this.plugin.applyGraphColors();
+          new Notice("Graph colours applied. Reopen the graph panel to see changes.", 6000);
+        }),
+      );
   }
 
   private renderActionsSection(containerEl: HTMLElement): void {

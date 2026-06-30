@@ -2,6 +2,7 @@ import { ItemView, WorkspaceLeaf, MarkdownRenderer } from "obsidian";
 import type AnisyncPlugin from "../main";
 import { VaultContext } from "./vaultContext";
 import { sendChatStream } from "../openrouter/client";
+import { LOGO_DATA_URL } from "./logo";
 
 export const CHAT_VIEW_TYPE = "ani-sync-chat-view";
 
@@ -93,19 +94,17 @@ export class ChatView extends ItemView {
       return;
     }
     this.messagesEl.empty();
-    const welcome = this.messagesEl.createDiv({ cls: "anisync-chat-welcome" });
-    welcome.style.cssText = "display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 32px 16px;";
+    this.messagesEl.style.backgroundImage = `url(${LOGO_DATA_URL})`;
+    this.messagesEl.style.backgroundRepeat = "no-repeat";
+    this.messagesEl.style.backgroundPosition = "center 40px";
+    this.messagesEl.style.backgroundSize = "120px auto";
 
-    welcome.createEl("img", {
-      attr: {
-        src: "data:image/svg+xml," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="80" height="80"><defs><linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#7c3aed"/><stop offset="100%" style="stop-color:#1e1b4b"/></linearGradient><linearGradient id="glow" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#02a9ff"/><stop offset="100%" style="stop-color:#a78bfa"/></linearGradient></defs><rect width="120" height="120" rx="28" fill="url(#bg)"/><g opacity="0.08" stroke="#fff" stroke-width="1"><line x1="30" y1="0" x2="30" y2="120"/><line x1="60" y1="0" x2="60" y2="120"/><line x1="90" y1="0" x2="90" y2="120"/><line x1="0" y1="30" x2="120" y2="30"/><line x1="0" y1="60" x2="120" y2="60"/><line x1="0" y1="90" x2="120" y2="90"/></g><circle cx="60" cy="28" r="8" fill="#02a9ff" opacity="0.9"/><circle cx="32" cy="58" r="7" fill="#8b5cf6" opacity="0.9"/><circle cx="88" cy="58" r="7" fill="#10b981" opacity="0.9"/><circle cx="42" cy="90" r="6" fill="#f59e0b" opacity="0.9"/><circle cx="78" cy="90" r="6" fill="#f43f5e" opacity="0.9"/><circle cx="60" cy="60" r="9" fill="#eab308" opacity="0.9"/><g stroke="url(#glow)" stroke-width="1.5" fill="none" opacity="0.4"><line x1="60" y1="36" x2="60" y2="51"/><line x1="39" y1="58" x2="51" y2="60"/><line x1="81" y1="58" x2="69" y2="60"/><line x1="46" y1="85" x2="54" y2="68"/><line x1="74" y1="85" x2="66" y2="68"/></g><g transform="translate(60,60)"><path d="M8,-10 A14,14 0 0,1 14,-2" stroke="url(#glow)" stroke-width="2" fill="none" stroke-linecap="round"/><polygon points="14,1 10,6 16,5" fill="#02a9ff"/><path d="M-8,10 A14,14 0 0,1 -14,2" stroke="url(#glow)" stroke-width="2" fill="none" stroke-linecap="round"/><polygon points="-14,-1 -10,-6 -16,-5" fill="#a78bfa"/></g></svg>`),
-        alt: "Ani-sync",
-      },
-    });
+    const username = this.plugin.settings.anilistUsername;
+    const text = username ? `Search anime, ${username}` : "Search anime";
 
-    const textDiv = welcome.createDiv();
-    textDiv.setText(loadingText ?? "Ask about your AniList library — media, staff, studios, and more.");
-    textDiv.style.cssText = "color: var(--text-muted); font-size: 14px;";
+    const msg = this.messagesEl.createDiv({ cls: "anisync-chat-welcome" });
+    msg.style.cssText = "text-align: center; padding: 180px 16px 32px; font-family: var(--font-interface); font-size: 18px; color: var(--text-muted);";
+    msg.setText(loadingText ?? text);
   }
 
   private async handleSend(): Promise<void> {
@@ -308,5 +307,10 @@ export class ChatView extends ItemView {
     if (["weather", "news", "politics", "code", "programming", "math", "recipe", "movie", "game", "stock", "crypto"].some(k => t.includes(k)))
       return "I can only answer questions about your AniList library. Try asking about your anime, manga, characters, or voice actors.";
     return null;
+  }
+
+  invalidateVaultContext(): void {
+    this.vaultContext?.invalidate();
+    this.vaultContext = null;
   }
 }

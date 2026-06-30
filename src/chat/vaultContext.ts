@@ -178,6 +178,13 @@ export class VaultContext {
 
   private loadingPromise: Promise<void> | null = null;
 
+  invalidate(): void {
+    this.nodes = [];
+    this.index = null;
+    this.loaded = false;
+    this.loadingPromise = null;
+  }
+
   async load(): Promise<void> {
     if (this.loaded) return;
     if (this.loadingPromise) return this.loadingPromise;

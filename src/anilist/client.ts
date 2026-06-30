@@ -13,6 +13,8 @@ import type { AnilistCharacterEdge } from "../types";
 
 const ENDPOINT = "https://graphql.anilist.co";
 const MIN_INTERVAL_MS = 700;
+const MAX_INTERVAL_MS = 2000;
+const SUCCESS_BACKOFF_STEP = 10;
 const BATCH_PAGE_SIZE = 50;
 const BATCH_PAGE_SAFETY_CAP = 50;
 
@@ -30,6 +32,8 @@ export interface AnilistClientOptions {
 export class AnilistClient {
   private token: string;
   private nextAllowedAt = 0;
+  private currentInterval = MIN_INTERVAL_MS;
+  private successSinceLast429 = 0;
   private onLog?: (message: string) => void;
   private onRetry?: (info: RetryInfo) => void;
 
@@ -82,7 +86,7 @@ export class AnilistClient {
   private async reserveSlot(): Promise<void> {
     const now = Date.now();
     const reservedAt = Math.max(now, this.nextAllowedAt);
-    this.nextAllowedAt = reservedAt + MIN_INTERVAL_MS;
+    this.nextAllowedAt = reservedAt + this.currentInterval;
     const wait = reservedAt - now;
     if (wait > 0) await sleep(wait);
   }
@@ -90,14 +94,22 @@ export class AnilistClient {
   private async runWithRetry<T>(fn: () => Promise<T>, attempt = 1): Promise<T> {
     await this.reserveSlot();
     try {
-      return await fn();
+      const result = await fn();
+      this.successSinceLast429 += 1;
+      if (this.successSinceLast429 >= SUCCESS_BACKOFF_STEP && this.currentInterval > MIN_INTERVAL_MS) {
+        this.currentInterval = Math.max(MIN_INTERVAL_MS, Math.floor(this.currentInterval / 2));
+        this.successSinceLast429 = 0;
+      }
+      return result;
     } catch (err) {
       const e = err as Error & { status?: number; retryAfter?: number };
       if (e?.status === 429 && attempt <= 3) {
         const waitMs = (e.retryAfter ?? 60) * 1000;
+        this.currentInterval = Math.min(MAX_INTERVAL_MS, this.currentInterval * 2);
+        this.successSinceLast429 = 0;
         this.onRetry?.({ attempt, waitMs, reason: "rate-limited" });
         await sleep(waitMs);
-        this.nextAllowedAt = Date.now() + MIN_INTERVAL_MS;
+        this.nextAllowedAt = Date.now() + this.currentInterval;
         return this.runWithRetry(fn, attempt + 1);
       }
       if (e?.status && e.status >= 500 && attempt <= 3) {

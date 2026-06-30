@@ -70,7 +70,6 @@ export default class AnisyncPlugin extends Plugin {
 
   async onload(): Promise<void> {
     await this.loadAll();
-    this.applyGraphColors();
 
     this.registerObsidianProtocolHandler("ani-sync", (params) => {
       const token = params.token;
@@ -205,7 +204,7 @@ export default class AnisyncPlugin extends Plugin {
     this.stopAutoSync();
     const ms = Math.max(30, this.settings.pollIntervalSeconds) * 1000;
     const id = window.setInterval(() => {
-      if (this.canSync()) {
+      if (this.canSync() && !this.syncEngine) {
         void this.runSync().catch(() => {});
       }
     }, ms);
@@ -222,6 +221,49 @@ export default class AnisyncPlugin extends Plugin {
 
   refreshSettingsTab(): void {
     this.settingTab?.display();
+  }
+
+  invalidateChatContext(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE)) {
+      const view = leaf.view as import("./chat/view").ChatView;
+      view.invalidateVaultContext();
+    }
+  }
+
+  async applyGraphColors(): Promise<void> {
+    try {
+      const path = ".obsidian/graph.json";
+      const adapter = this.app.vault.adapter;
+      const raw = await adapter.exists(path) ? await adapter.read(path) : '{"colorGroups":[]}';
+      const graph = JSON.parse(raw);
+      const outputDir = (this.settings.outputDir ?? "Ani-sync").replace(/^\/+|\/+$/g, "") || "Ani-sync";
+      const groups: Record<string, unknown>[] = graph.colorGroups ?? [];
+      const kept = groups.filter((g: Record<string, unknown>) => {
+        const q = (g.query as string ?? "").trim();
+        return !q.startsWith(`path:${outputDir}/`);
+      });
+      const folderMap: Record<string, string> = {
+        anime: "Anime",
+        manga: "Manga",
+        staff: "Staff",
+        studios: "Studios",
+        tags: "Tags",
+        characters: "Characters",
+      };
+      const colors = (this.settings.graphColors ?? {}) as unknown as Record<string, string>;
+      for (const [key, folder] of Object.entries(folderMap)) {
+        const hex = colors[key] ?? "#ffffff";
+        const rgb = parseInt(hex.replace("#", ""), 16);
+        kept.push({
+          query: `path:${outputDir}/${folder}`,
+          color: { rgb: isNaN(rgb) ? 16777215 : rgb, a: 1 },
+        });
+      }
+      graph.colorGroups = kept;
+      await adapter.write(path, JSON.stringify(graph, null, 2));
+    } catch (e) {
+      console.error("Ani-sync: failed to apply graph colors", e);
+    }
   }
 
   async runSync(): Promise<void> {
@@ -266,11 +308,13 @@ export default class AnisyncPlugin extends Plugin {
     try {
       const stats = await this.syncEngine.run();
       this.settings.lastSyncAt = new Date().toISOString();
-      this.settings.lastSyncStats = `${stats.created} created, ${stats.updated} updated, ${stats.skipped} unchanged, ${stats.failed} failed`;
+      this.settings.lastSyncStats = `${stats.created} created, ${stats.updated} updated, ${stats.deleted} deleted, ${stats.skipped} unchanged, ${stats.failed} failed`;
       await this.saveAll();
+      try { await this.applyGraphColors(); } catch {}
+      try { this.invalidateChatContext(); } catch {}
       this.syncPopup.show("Sync complete!", 100);
       setTimeout(() => this.syncPopup.hide(), 2000);
-      new Notice(`Ani-sync: done — ${stats.created} created, ${stats.updated} updated, ${stats.skipped} skipped, ${stats.failed} failed`, 6000);
+      new Notice(`Ani-sync: done — ${stats.created} created, ${stats.updated} updated, ${stats.deleted} deleted, ${stats.skipped} skipped, ${stats.failed} failed`, 6000);
     } catch (e) {
       const msg = (e as Error)?.message ?? String(e);
       this.syncPopup.show(`Failed: ${msg}`, 100);
@@ -324,48 +368,6 @@ export default class AnisyncPlugin extends Plugin {
     await this.saveAll();
   }
 
-  applyGraphColors(): void {
-    const colors = this.settings.graphColors;
-    const outputDir = this.settings.outputDir;
-
-    const rules: string[] = [];
-
-    const folderMap: [string, string][] = [
-      ["/Anime/", colors.anime],
-      ["/Manga/", colors.manga],
-      ["/Staff/", colors.staff],
-      ["/Studios/", colors.studios],
-      ["/Tags/", colors.tags],
-      ["/Characters/", colors.characters],
-    ];
-
-    for (const [folder, color] of folderMap) {
-      if (!color) continue;
-      rules.push(`.graph-view .graph-node[data-path*="${outputDir}${folder}"] > circle { fill: ${color} !important; stroke: ${color} !important; }`);
-      rules.push(`.graph-view .graph-node[data-path*="${outputDir}${folder}"] > text { fill: ${color} !important; }`);
-    }
-
-    // Set CSS custom properties so Obsidian's native color system picks them up
-    const vals = [colors.anime, colors.manga, colors.staff, colors.studios, colors.tags, colors.characters].filter(Boolean);
-    if (vals.length) {
-      rules.push(`.graph-view.graph-view.color-circle { --graph-color-0: ${vals[0]}; }`);
-      if (vals[1]) rules.push(`.graph-view { --graph-color-1: ${vals[1]}; }`);
-      if (vals[2]) rules.push(`.graph-view { --graph-color-2: ${vals[2]}; }`);
-      if (vals[3]) rules.push(`.graph-view { --graph-color-3: ${vals[3]}; }`);
-      if (vals[4]) rules.push(`.graph-view { --graph-color-4: ${vals[4]}; }`);
-      if (vals[5]) rules.push(`.graph-view { --graph-color-5: ${vals[5]}; }`);
-    }
-
-    const css = rules.join("\n");
-    let styleEl = document.getElementById("anisync-graph-colors") as HTMLStyleElement;
-    if (!styleEl) {
-      styleEl = document.createElement("style");
-      styleEl.id = "anisync-graph-colors";
-      document.head.appendChild(styleEl);
-    }
-    styleEl.textContent = css;
-  }
-
   private buildVaultAdapter(): VaultAdapter {
     const adapter = this.app.vault.adapter;
     const fileManager = this.app.fileManager;
@@ -381,8 +383,14 @@ export default class AnisyncPlugin extends Plugin {
       },
       async write(path: string, content: string): Promise<void> {
         const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
-        if (dir && dir !== "" && !(await adapter.exists(dir))) {
-          await vault.createFolder(dir);
+        if (dir && dir !== "") {
+          try {
+            if (!(await adapter.exists(dir))) {
+              await vault.createFolder(dir);
+            }
+          } catch {
+            // concurrent write created the folder already — proceed
+          }
         }
         const existing = vault.getAbstractFileByPath(path);
         if (existing instanceof TFile) {

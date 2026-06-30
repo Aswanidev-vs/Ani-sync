@@ -283,7 +283,10 @@ export class ChatView extends ItemView {
 
   private removeWelcome(): void {
     const w = this.messagesEl.querySelector(".anisync-chat-welcome");
-    w?.remove();
+    if (w) {
+      w.remove();
+      this.messagesEl.style.backgroundImage = "none";
+    }
   }
 
   private hasChatMessages(): boolean {

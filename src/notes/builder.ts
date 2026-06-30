@@ -426,11 +426,25 @@ export function buildArtifacts(built: BuiltArtifacts, syncedAt: string): NoteArt
 
   const mediaByStudioId = new Map<number, string[]>();
 
+  // Group media by slugified title for character cast merging
+  const mediaBySlug = new Map<string, MediaNote[]>();
+  for (const m of built.media) {
+    if (m.characters.length === 0) continue;
+    const slug = slugify(pickTitle(m.title));
+    if (!mediaBySlug.has(slug)) mediaBySlug.set(slug, []);
+    mediaBySlug.get(slug)!.push(m);
+  }
+
+  for (const [slug, mediaList] of mediaBySlug) {
+    if (mediaList.length === 1) {
+      artifacts.push(buildMediaCharacterArtifact(mediaList[0], built.characters, syncedAt));
+    } else {
+      artifacts.push(buildMergedCharacterArtifact(mediaList, built.characters, syncedAt));
+    }
+  }
+
   for (const m of built.media) {
     const mediaTitle = pickTitle(m.title);
-    if (m.characters.length > 0) {
-      artifacts.push(buildMediaCharacterArtifact(m, built.characters, syncedAt));
-    }
     for (const studio of m.studios) {
       if (!mediaByStudioId.has(studio.id)) mediaByStudioId.set(studio.id, []);
       if (!mediaByStudioId.get(studio.id)!.includes(mediaTitle)) {
@@ -442,6 +456,31 @@ export function buildArtifacts(built: BuiltArtifacts, syncedAt: string): NoteArt
   for (const s of built.studios.values()) {
     const works = mediaByStudioId.get(s.id) ?? [];
     artifacts.push(buildStudioArtifact(s, works, syncedAt));
+  }
+
+  // Build VA → media mapping for Voice-Actors.md MOC
+  const vaToMedia = new Map<string, { title: string; slug: string; characters: string[] }[]>();
+  for (const m of built.media) {
+    const mediaTitle = pickTitle(m.title);
+    const mediaSlug = slugify(mediaTitle);
+    for (const c of m.characters) {
+      const ch = built.characters.get(c.id);
+      if (!ch) continue;
+      for (const va of ch.voiceActors) {
+        if (!vaToMedia.has(va.name)) vaToMedia.set(va.name, []);
+        const entries = vaToMedia.get(va.name)!;
+        let entry = entries.find(e => e.slug === mediaSlug);
+        if (!entry) {
+          entry = { title: mediaTitle, slug: mediaSlug, characters: [] };
+          entries.push(entry);
+        }
+        if (!entry.characters.includes(ch.name)) entry.characters.push(ch.name);
+      }
+    }
+  }
+
+  if (vaToMedia.size > 0) {
+    artifacts.push(buildVoiceActorMocArtifact(vaToMedia, syncedAt));
   }
 
   return artifacts;
@@ -648,10 +687,18 @@ export function buildMediaCharacterArtifact(
   const title = pickTitle(mediaNote.title);
   const titleSlug = slugify(title);
 
+  // Collect unique VA names for frontmatter
+  const vaNames = new Set<string>();
+  for (const c of mediaNote.characters) {
+    for (const va of c.voiceActors) vaNames.add(va.name);
+  }
+
   const fm: Record<string, unknown> = {
     mediaId: mediaNote.mediaId,
     type: "MEDIA_CHARACTERS",
     mediaTitle: title,
+    mediaType: mediaNote.type,
+    voiceActors: [...vaNames].sort(),
     syncedAt: SYNCED_AT_PLACEHOLDER,
   };
 
@@ -674,6 +721,7 @@ export function buildMediaCharacterArtifact(
     if (ch.age) body.push(`**Age:** ${ch.age}  `);
     if (ch.dateOfBirth) body.push(`**Birthday:** ${ch.dateOfBirth}  `);
     body.push(`**Role:** ${c.role ?? ""}  `);
+    body.push(`**Type:** ${mediaNote.type}  `);
     body.push(`[AniList](${ch.siteUrl ?? ""})  `);
     body.push("");
 
@@ -704,6 +752,147 @@ export function buildMediaCharacterArtifact(
     filename: `${titleSlug}.md`,
     body: renderFrontmatter(fm) + "\n" + body.join("\n"),
     uniqueKey: `media-characters:${mediaNote.mediaId}`,
+  };
+}
+
+export function buildMergedCharacterArtifact(
+  mediaNotes: MediaNote[],
+  characters: Map<number, CharacterArtifactData>,
+  syncedAt: string,
+): NoteArtifact {
+  const primaryNote = mediaNotes[0];
+  const title = pickTitle(primaryNote.title);
+  const titleSlug = slugify(title);
+
+  const types = new Set(mediaNotes.map(m => m.type));
+  const mediaTypeStr = types.size > 1
+    ? [...types].sort().join("/")
+    : [...types][0];
+
+  const mediaIds = mediaNotes.map(m => m.mediaId).sort();
+
+  // Collect unique VA names for frontmatter
+  const vaNames = new Set<string>();
+  for (const m of mediaNotes) {
+    for (const c of m.characters) {
+      const ch = characters.get(c.id);
+      if (ch) {
+        for (const va of ch.voiceActors) vaNames.add(va.name);
+      }
+    }
+  }
+
+  const fm: Record<string, unknown> = {
+    mediaIds,
+    type: "MEDIA_CHARACTERS",
+    mediaTitle: title,
+    mediaType: mediaTypeStr,
+    voiceActors: [...vaNames].sort(),
+    syncedAt: SYNCED_AT_PLACEHOLDER,
+  };
+
+  // Merge characters: track which media types each character appears in
+  const merged = new Map<number, { name: string; types: Set<"ANIME" | "MANGA">; roles: string[] }>();
+  for (const m of mediaNotes) {
+    for (const c of m.characters) {
+      if (!merged.has(c.id)) {
+        merged.set(c.id, { name: c.name, types: new Set(), roles: [] });
+      }
+      const mc = merged.get(c.id)!;
+      mc.types.add(m.type);
+      if (c.role && !mc.roles.includes(c.role)) mc.roles.push(c.role);
+    }
+  }
+
+  const charTypeLabels: Record<string, string> = {
+    ANIME: "Anime",
+    MANGA: "Manga",
+  };
+  const formatType = (types: Set<"ANIME" | "MANGA">): string => {
+    return [...types].map(t => charTypeLabels[t]).join("/");
+  };
+
+  const body: string[] = [];
+  body.push(`# ${title} — Characters`);
+  body.push("");
+
+  for (const [charId, mc] of merged) {
+    const ch = characters.get(charId);
+    if (!ch) continue;
+
+    body.push(`## ${ch.name}`);
+    body.push("");
+    if (ch.imageLarge) {
+      body.push(`![${ch.name}](${ch.imageLarge})`);
+      body.push("");
+    }
+    if (ch.native) body.push(`**Native:** ${ch.native}  `);
+    if (ch.gender) body.push(`**Gender:** ${ch.gender}  `);
+    if (ch.age) body.push(`**Age:** ${ch.age}  `);
+    if (ch.dateOfBirth) body.push(`**Birthday:** ${ch.dateOfBirth}  `);
+    body.push(`**Role:** ${mc.roles.join(", ")}  `);
+    body.push(`**Type:** ${formatType(mc.types)}  `);
+    body.push(`[AniList](${ch.siteUrl ?? ""})  `);
+    body.push("");
+
+    if (ch.voiceActors.length) {
+      body.push("### Voice Actors");
+      body.push("");
+      for (const va of ch.voiceActors) {
+        if (va.imageLarge) {
+          body.push(`![${va.name}](${va.imageLarge})`);
+        }
+        body.push(`**${va.name}**  `);
+        if (va.native) body.push(`Native: ${va.native}  `);
+        if (va.language) body.push(`Language: ${va.language}  `);
+        body.push("");
+      }
+    }
+
+    if (ch.description) {
+      body.push(ch.description);
+      body.push("");
+    }
+  }
+
+  body.push(`[AniList - ${title}](${primaryNote.siteUrl ?? ""})`);
+
+  return {
+    folder: "Characters",
+    filename: `${titleSlug}.md`,
+    body: renderFrontmatter(fm) + "\n" + body.join("\n"),
+    uniqueKey: `media-characters:${titleSlug}`,
+  };
+}
+
+export function buildVoiceActorMocArtifact(
+  vaToMedia: Map<string, { title: string; slug: string; characters: string[] }[]>,
+  syncedAt: string,
+): NoteArtifact {
+  const fm: Record<string, unknown> = {
+    type: "VOICE_ACTOR_INDEX",
+    syncedAt: SYNCED_AT_PLACEHOLDER,
+  };
+
+  const body: string[] = [`# Voice Actors`, ""];
+
+  const sortedVAs = [...vaToMedia.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+
+  for (const [vaName, mediaEntries] of sortedVAs) {
+    body.push(`## ${vaName}`);
+    body.push("");
+    for (const me of mediaEntries) {
+      const charList = me.characters.join(", ");
+      body.push(`- [[Characters/${me.slug}|${me.title}]] — ${charList}`);
+    }
+    body.push("");
+  }
+
+  return {
+    folder: "",
+    filename: "Voice-Actors.md",
+    body: renderFrontmatter(fm) + "\n" + body.join("\n"),
+    uniqueKey: "voice-actor-index",
   };
 }
 

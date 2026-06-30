@@ -12,9 +12,9 @@ import {
 import type { AnilistCharacterEdge } from "../types";
 
 const ENDPOINT = "https://graphql.anilist.co";
-const FAST_INTERVAL_MS = 400;
-const MODERATE_INTERVAL_MS = 700;
-const SLOW_INTERVAL_MS = 1500;
+const MIN_INTERVAL_MS = 700;
+const MAX_INTERVAL_MS = 2000;
+const SUCCESS_BACKOFF_STEP = 10;
 const BATCH_PAGE_SIZE = 50;
 const BATCH_PAGE_SAFETY_CAP = 50;
 
@@ -32,7 +32,8 @@ export interface AnilistClientOptions {
 export class AnilistClient {
   private token: string;
   private nextAllowedAt = 0;
-  private currentInterval = MODERATE_INTERVAL_MS;
+  private currentInterval = MIN_INTERVAL_MS;
+  private successSinceLast429 = 0;
   private onLog?: (message: string) => void;
   private onRetry?: (info: RetryInfo) => void;
 
@@ -78,10 +79,6 @@ export class AnilistClient {
         throw new Error(`AniList returned no data (status ${response.status})`);
       }
 
-      const remaining = Number(response.headers["x-ratelimit-remaining"] ?? "30");
-      const reset = Number(response.headers["x-ratelimit-reset"] ?? "0");
-      this.updateRateLimit(remaining, reset);
-
       return json.data;
     });
   }
@@ -94,35 +91,22 @@ export class AnilistClient {
     if (wait > 0) await sleep(wait);
   }
 
-  private updateRateLimit(remaining: number, resetEpoch: number): void {
-    if (Number.isFinite(remaining) && remaining >= 0) {
-      if (remaining === 0 && Number.isFinite(resetEpoch) && resetEpoch > 0) {
-        const resetMs = resetEpoch * 1000;
-        if (resetMs > Date.now()) {
-          this.nextAllowedAt = resetMs;
-          this.currentInterval = MODERATE_INTERVAL_MS;
-          return;
-        }
-      }
-      if (remaining > 10) {
-        this.currentInterval = FAST_INTERVAL_MS;
-      } else if (remaining > 5) {
-        this.currentInterval = MODERATE_INTERVAL_MS;
-      } else {
-        this.currentInterval = SLOW_INTERVAL_MS;
-      }
-    }
-  }
-
   private async runWithRetry<T>(fn: () => Promise<T>, attempt = 1): Promise<T> {
     await this.reserveSlot();
     try {
-      return await fn();
+      const result = await fn();
+      this.successSinceLast429 += 1;
+      if (this.successSinceLast429 >= SUCCESS_BACKOFF_STEP && this.currentInterval > MIN_INTERVAL_MS) {
+        this.currentInterval = Math.max(MIN_INTERVAL_MS, Math.floor(this.currentInterval / 2));
+        this.successSinceLast429 = 0;
+      }
+      return result;
     } catch (err) {
       const e = err as Error & { status?: number; retryAfter?: number };
       if (e?.status === 429 && attempt <= 3) {
         const waitMs = (e.retryAfter ?? 60) * 1000;
-        this.currentInterval = SLOW_INTERVAL_MS;
+        this.currentInterval = Math.min(MAX_INTERVAL_MS, this.currentInterval * 2);
+        this.successSinceLast429 = 0;
         this.onRetry?.({ attempt, waitMs, reason: "rate-limited" });
         await sleep(waitMs);
         this.nextAllowedAt = Date.now() + this.currentInterval;

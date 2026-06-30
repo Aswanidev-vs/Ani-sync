@@ -163,17 +163,13 @@ export class SyncEngine {
     for (const m of fetchedAnime) if (m) details.set(`ANIME:${m.id}`, m);
     for (const m of fetchedManga) if (m) details.set(`MANGA:${m.id}`, m);
 
-    // Check ALL entries (cached + fresh) for incomplete character data — fetch missing pages
-    const needsMoreChars = [...details.values()].filter(m => {
-      if (!m) return false;
-      const chars = m.characters as { edges?: unknown[]; pageInfo?: { hasNextPage?: boolean } } | null | undefined;
-      if (!chars?.edges) return false;
-      // Re-fetch if the batch query says there are more, OR if cached data
-      // has no pageInfo marker (old cache) but hits the perPage limit
-      return chars.pageInfo?.hasNextPage || (chars.pageInfo === undefined && chars.edges.length >= 50);
-    });
-    if (needsMoreChars.length > 0) {
-      await pMapLimit(needsMoreChars, 4, async (m) => {
+    const allFetched = [...fetchedAnime, ...fetchedManga].filter(Boolean) as MediaDetail[];
+    if (allFetched.length > 0) {
+      const needsMorePages = allFetched.filter(m => {
+        const chars = m.characters as { pageInfo?: { hasNextPage: boolean } } | null | undefined;
+        return chars?.pageInfo?.hasNextPage;
+      });
+      await pMapLimit(needsMorePages, 4, async (m) => {
         if (this.cancelled) return;
         const rest = await this.anilist.fetchAllCharacters(m.id, m.type);
         const existing = m.characters?.edges ?? [];
@@ -417,7 +413,7 @@ export class SyncEngine {
     const toDelete: { k: string; vaultPath: string }[] = [];
 
     for (const [key, vaultPath] of Object.entries(paths)) {
-      if (key.startsWith("character:") && vaultPath.includes("/Characters/")) {
+      if (key.startsWith("character:") && vaultPath.startsWith("Characters/")) {
         toDelete.push({ k: key, vaultPath });
       }
     }

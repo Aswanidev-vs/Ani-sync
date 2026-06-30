@@ -3,7 +3,7 @@ import type { AnilistClient } from "../anilist/client";
 import {
   flattenSummaryToMap,
 } from "../anilist/queries";
-import type { AnilistCharacterEdge, MediaDetail, MediaList } from "../types";
+import type { AnilistCharacterConnection, AnilistCharacterEdge, AnilistVoiceActor, MediaDetail, MediaList } from "../types";
 import { buildAll, buildArtifacts, SYNCED_AT_PLACEHOLDER } from "../notes/builder";
 import { extractHashMarker, stripHashMarker, sha256Hex } from "./hash";
 import { AnisyncCache, diffSummary } from "./cache";
@@ -89,15 +89,18 @@ export class SyncEngine {
       { lists: summary.mangaLists },
     );
     const oldSummary = this.cache?.summary ?? {};
+    const cachedDetails = new Map(Object.entries(this.cache?.details ?? {}));
     const diff = diffSummary(oldSummary, newSummary);
     const { changed, removed, unchanged } = diff;
+    const staleCharacterDetails = [...cachedDetails.entries()]
+      .filter(([key, detail]) => newSummary[key] != null && this.needsCharacterRefresh(detail))
+      .map(([key]) => key);
     onProgress(`Summary: ${changed.length} changed, ${removed.length} removed, ${unchanged.length} unchanged`, 5);
 
-    if (changed.length === 0 && removed.length === 0) {
+    if (changed.length === 0 && removed.length === 0 && staleCharacterDetails.length === 0) {
       onProgress("No changes detected. Cache-only update, skipping list fetches and writes.", 100);
       const idleStats: SyncStats = { created: 0, updated: 0, deleted: 0, skipped: unchanged.length, failed: 0, planned: 0 };
-      const detailsMap = new Map(Object.entries(this.cache?.details ?? {}));
-      await this.updateCache(newSummary, detailsMap);
+      await this.updateCache(newSummary, cachedDetails);
       return idleStats;
     }
 
@@ -108,14 +111,15 @@ export class SyncEngine {
       if (this.cancelled) {
         return this.cancelledStats();
       }
-      const detailsMap = new Map(Object.entries(this.cache?.details ?? {}));
+      const detailsMap = new Map(cachedDetails);
       for (const k of removed) detailsMap.delete(k);
       await this.updateCache(newSummary, detailsMap);
       onProgress("Done", 100);
       return removalStats;
     }
 
-    onProgress(`Fetching full lists for ${changed.length} changed entry/entries...`, 7);
+    const fetchKeys = [...new Set([...changed, ...staleCharacterDetails])];
+    onProgress(`Fetching full lists for ${fetchKeys.length} changed/incomplete entry/entries...`, 7);
     const [fullAnimeLists, fullMangaLists] = await Promise.all([
       this.anilist.fetchFullList("ANIME", this.username),
       this.anilist.fetchFullList("MANGA", this.username),
@@ -128,15 +132,15 @@ export class SyncEngine {
     if (this.cancelled) return this.cancelledStats();
 
     const details = new Map<string, MediaDetail>();
-    for (const k of Object.keys(this.cache?.details ?? {})) {
-      if (newSummary[k] != null && !changed.includes(k)) {
-        details.set(k, this.cache.details[k]);
+    for (const [k, detail] of cachedDetails) {
+      if (newSummary[k] != null && !fetchKeys.includes(k)) {
+        details.set(k, detail);
       }
     }
     onProgress(`Reusing ${details.size}/${totalEntries} cached details`, 10 + (details.size / totalEntries) * 20);
 
     const toFetch: { id: number; type: "ANIME" | "MANGA" }[] = [];
-    for (const key of changed) {
+    for (const key of fetchKeys) {
       const [type, idStr] = key.split(":");
       const id = Number(idStr);
       if ((type === "ANIME" || type === "MANGA") && Number.isFinite(id)) {
@@ -160,22 +164,19 @@ export class SyncEngine {
         : Promise.resolve([] as MediaDetail[]),
     ]);
 
-    for (const m of fetchedAnime) if (m) details.set(`ANIME:${m.id}`, m);
-    for (const m of fetchedManga) if (m) details.set(`MANGA:${m.id}`, m);
+    for (const m of fetchedAnime) if (m) details.set(`ANIME:${m.id}`, this.mergeMediaDetail(cachedDetails.get(`ANIME:${m.id}`), m));
+    for (const m of fetchedManga) if (m) details.set(`MANGA:${m.id}`, this.mergeMediaDetail(cachedDetails.get(`MANGA:${m.id}`), m));
 
-    // Check ALL entries (cached + fresh) for incomplete character data — fetch missing pages
-    const needsMoreChars = [...details.values()].filter(m => {
-      if (!m) return false;
-      const chars = m.characters as { edges?: unknown[]; pageInfo?: { hasNextPage?: boolean } } | null | undefined;
-      if (!chars?.edges) return false;
-      return chars.pageInfo?.hasNextPage || (chars.pageInfo == null && chars.edges.length >= 50);
-    });
-    if (needsMoreChars.length > 0) {
-      await pMapLimit(needsMoreChars, 4, async (m) => {
+    const detailsNeedingCharacters = [...details.values()].filter((m) => this.needsCharacterRefresh(m) || !!m.characters?.pageInfo?.hasNextPage);
+    if (detailsNeedingCharacters.length > 0) {
+      onProgress(`Fetching all characters for ${detailsNeedingCharacters.length} media...`, 32);
+      await pMapLimit(detailsNeedingCharacters, 4, async (m) => {
         if (this.cancelled) return;
-        const rest = await this.anilist.fetchAllCharacters(m.id, m.type);
-        const existing = m.characters?.edges ?? [];
-        m.characters = { edges: [...existing, ...rest], pageInfo: { hasNextPage: false } } as typeof m.characters;
+        const fetchedEdges = await this.anilist.fetchAllCharacters(m.id, m.type);
+        m.characters = this.mergeCharacterConnections(
+          { edges: m.characters?.edges ?? [], pageInfo: { hasNextPage: false } },
+          { edges: fetchedEdges, pageInfo: { hasNextPage: false } },
+        );
       });
     }
 
@@ -229,6 +230,101 @@ export class SyncEngine {
 
   cancelledStats(): SyncStats {
     return { created: 0, updated: 0, deleted: 0, skipped: 0, failed: 0, planned: 0, cancelled: true };
+  }
+
+  private needsCharacterRefresh(detail: MediaDetail): boolean {
+    const edges = detail.characters?.edges;
+    if (!Array.isArray(edges) || edges.length === 0) return true;
+    return edges.some((edge) => !edge?.node?.id || !Array.isArray(edge.voiceActors));
+  }
+
+  private mergeMediaDetail(existing: MediaDetail | undefined, incoming: MediaDetail): MediaDetail {
+    if (!existing) return incoming;
+    return {
+      ...existing,
+      ...incoming,
+      title: { ...existing.title, ...incoming.title },
+      coverImage: { ...existing.coverImage, ...incoming.coverImage },
+      characters: this.mergeCharacterConnections(existing.characters, incoming.characters),
+    };
+  }
+
+  private mergeCharacterConnections(
+    existing: AnilistCharacterConnection | null | undefined,
+    incoming: AnilistCharacterConnection | null | undefined,
+  ): AnilistCharacterConnection | undefined {
+    const existingEdges = existing?.edges ?? [];
+    const incomingEdges = incoming?.edges ?? [];
+    if (existingEdges.length === 0 && incomingEdges.length === 0) {
+      return incoming ?? existing ?? undefined;
+    }
+
+    const merged = new Map<string, AnilistCharacterEdge>();
+    for (const edge of [...existingEdges, ...incomingEdges]) {
+      if (!edge?.node?.id) continue;
+      const key = `${edge.node.id}:${edge.role ?? ""}`;
+      const prev = merged.get(key);
+      if (!prev) {
+        merged.set(key, {
+          ...edge,
+          voiceActors: [...(edge.voiceActors ?? [])],
+        });
+        continue;
+      }
+      merged.set(key, {
+        ...prev,
+        ...edge,
+        node: {
+          ...prev.node,
+          ...edge.node,
+          name: { ...prev.node.name, ...edge.node.name },
+          image: { ...prev.node.image, ...edge.node.image },
+        },
+        voiceActors: this.mergeVoiceActors(prev.voiceActors ?? [], edge.voiceActors ?? []),
+      });
+    }
+
+    return {
+      pageInfo: { hasNextPage: !!existing?.pageInfo?.hasNextPage || !!incoming?.pageInfo?.hasNextPage },
+      edges: [...merged.values()],
+    };
+  }
+
+  private mergeVoiceActors(existing: AnilistVoiceActor[], incoming: AnilistVoiceActor[]): AnilistVoiceActor[] {
+    const byId = new Map<number, AnilistVoiceActor>();
+    const byName = new Map<string, AnilistVoiceActor>();
+    for (const va of [...existing, ...incoming]) {
+      if (!va) continue;
+      const name = this.normalizeName(va.name?.full);
+      if (va.id != null) {
+        const prev = byId.get(va.id);
+        byId.set(va.id, prev ? this.pickRicherVoiceActor(prev, va) : va);
+      } else if (name) {
+        const prev = byName.get(name);
+        byName.set(name, prev ? this.pickRicherVoiceActor(prev, va) : va);
+      }
+    }
+    return [...byId.values(), ...[...byName.values()].filter((va) => va.id == null)];
+  }
+
+  private pickRicherVoiceActor(a: AnilistVoiceActor, b: AnilistVoiceActor): AnilistVoiceActor {
+    const score = (va: AnilistVoiceActor) => {
+      let n = 0;
+      if (va.name?.full) n += 2;
+      if (va.name?.native) n += 1;
+      if (va.language) n += 1;
+      if (va.image?.large) n += 2;
+      if (va.image?.medium) n += 1;
+      return n;
+    };
+
+    return score(b) >= score(a)
+      ? { ...a, ...b, name: { ...a.name, ...b.name }, image: { ...a.image, ...b.image } }
+      : a;
+  }
+
+  private normalizeName(name: string | null | undefined): string {
+    return (name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
   }
 
   private async prepareArtifacts(artifacts: ReturnType<typeof buildArtifacts>): Promise<PreparedArtifact[]> {

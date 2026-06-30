@@ -1,5 +1,5 @@
 import { requestUrl, RequestUrlResponse } from "obsidian";
-import type { MediaDetail, Viewer, MediaList, MediaListCollection } from "../types";
+import type { MediaDetail, Viewer, MediaList, MediaListCollection, AnilistVoiceActor } from "../types";
 import {
   VIEWER_QUERY,
   MEDIA_LIST_COLLECTION_QUERY,
@@ -217,14 +217,7 @@ export class AnilistClient {
           });
           continue;
         }
-        const byId = new Map<number, NonNullable<AnilistCharacterEdge["voiceActors"]>[number]>();
-        for (const va of existing.voiceActors ?? []) {
-          if (va?.id != null) byId.set(va.id, va);
-        }
-        for (const va of e.voiceActors ?? []) {
-          if (va?.id != null && !byId.has(va.id)) byId.set(va.id, va);
-        }
-        existing.voiceActors = [...byId.values()];
+        existing.voiceActors = mergeVoiceActors(existing.voiceActors ?? [], e.voiceActors ?? []);
       }
       if (!conn.pageInfo?.hasNextPage) break;
       page += 1;
@@ -246,6 +239,45 @@ export class AnilistClient {
 
     return allEdges;
   }
+}
+
+function mergeVoiceActors(existing: AnilistVoiceActor[], incoming: AnilistVoiceActor[]): AnilistVoiceActor[] {
+  const byId = new Map<number, AnilistVoiceActor>();
+  const byName = new Map<string, AnilistVoiceActor>();
+
+  for (const va of [...existing, ...incoming]) {
+    if (!va) continue;
+    const name = normalizeName(va.name?.full);
+    if (va.id != null) {
+      const prev = byId.get(va.id);
+      byId.set(va.id, prev ? pickRicherVoiceActor(prev, va) : va);
+    } else if (name) {
+      const prev = byName.get(name);
+      byName.set(name, prev ? pickRicherVoiceActor(prev, va) : va);
+    }
+  }
+
+  return [...byId.values(), ...[...byName.values()].filter((va) => va.id == null)];
+}
+
+function pickRicherVoiceActor(a: AnilistVoiceActor, b: AnilistVoiceActor): AnilistVoiceActor {
+  const score = (va: AnilistVoiceActor) => {
+    let n = 0;
+    if (va.name?.full) n += 2;
+    if (va.name?.native) n += 1;
+    if (va.language) n += 1;
+    if (va.image?.large) n += 2;
+    if (va.image?.medium) n += 1;
+    return n;
+  };
+
+  return score(b) >= score(a)
+    ? { ...a, ...b, name: { ...a.name, ...b.name }, image: { ...a.image, ...b.image } }
+    : a;
+}
+
+function normalizeName(name: string | null | undefined): string {
+  return (name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
 function sleep(ms: number): Promise<void> {

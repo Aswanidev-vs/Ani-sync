@@ -190,7 +190,13 @@ export class AnisyncSettingTab extends PluginSettingTab {
           .setPlaceholder("sk-or-v1-...")
           .setValue(s.openrouterApiKey)
           .onChange(async (value) => {
-            s.openrouterApiKey = value;
+            const next = value.trim();
+            const apiKeyChanged = next !== s.openrouterApiKey;
+            s.openrouterApiKey = next;
+            if (apiKeyChanged) {
+              s.openrouterAvailableModels = [];
+              s.openrouterModel = "";
+            }
             await this.plugin.saveSettings();
           });
         text.inputEl.type = "password";
@@ -210,7 +216,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
           try {
             const models = await fetchModels(s.openrouterApiKey);
             s.openrouterAvailableModels = models;
-            if (models.length > 0 && !s.openrouterModel) {
+            if (models.length > 0 && (!s.openrouterModel || !models.some((m) => m.id === s.openrouterModel))) {
               s.openrouterModel = models[0].id;
             }
             await this.plugin.saveSettings();

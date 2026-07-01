@@ -5,11 +5,11 @@ const MODELS_URL = "https://openrouter.ai/api/v1/models";
 const CHAT_URL = "https://openrouter.ai/api/v1/chat/completions";
 const MODELS_CACHE_TTL_MS = 60 * 60 * 1000;
 
-let cachedModels: { data: OpenRouterModel[]; fetchedAt: number } | null = null;
+let cachedModels: { apiKey: string; data: OpenRouterModel[]; fetchedAt: number } | null = null;
 
 export async function fetchModels(apiKey: string): Promise<OpenRouterModel[]> {
   const now = Date.now();
-  if (cachedModels && (now - cachedModels.fetchedAt) < MODELS_CACHE_TTL_MS) {
+  if (cachedModels && cachedModels.apiKey === apiKey && (now - cachedModels.fetchedAt) < MODELS_CACHE_TTL_MS) {
     return cachedModels.data;
   }
   const response: RequestUrlResponse = await requestUrl({
@@ -41,7 +41,7 @@ export async function fetchModels(apiKey: string): Promise<OpenRouterModel[]> {
     context_length: m.context_length,
     isFree: parseFloat(m.pricing.prompt) === 0 && parseFloat(m.pricing.completion) === 0,
   }));
-  cachedModels = { data: models, fetchedAt: now };
+  cachedModels = { apiKey, data: models, fetchedAt: now };
   return models;
 }
 

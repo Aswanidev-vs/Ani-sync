@@ -127,8 +127,15 @@ export class ChatView extends ItemView {
     // Preflight: check API key and model before vault load
     const apiKey = this.plugin.settings.openrouterApiKey;
     const model = this.plugin.settings.openrouterModel;
+    const availableModels = this.plugin.settings.openrouterAvailableModels;
     if (!apiKey || !model) {
       this.addAssistantMessage("Please configure your OpenRouter API key and select a model in **Settings → Ani-sync → OpenRouter AI**.");
+      this.sendBtn.disabled = false;
+      return;
+    }
+
+    if (availableModels.length > 0 && !availableModels.some((m) => m.id === model)) {
+      this.addAssistantMessage("Your selected OpenRouter model is no longer valid for the current API key. Re-fetch models in **Settings -> Ani-sync -> OpenRouter AI** and pick one again.");
       this.sendBtn.disabled = false;
       return;
     }

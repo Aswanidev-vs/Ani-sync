@@ -142,6 +142,7 @@ class SearchIndex {
     // Detect query intent: if user asks about voice/voiced/character, boost those types
     const vaIntent = /voice|voiced|voiced by|speaks|language|va|seiyuu|japanese|caste|act(e|or|ress)/i.test(q);
     const charIntent = /character|personagem|personaje|char/i.test(q);
+    const whoIntent = /who\s+(is|was|voices|voiced|plays|played|acts|acted|portrays|portrayed)/i.test(q);
 
     const scored: { entry: IndexEntry; score: number; matchedField: string }[] = [];
 
@@ -169,6 +170,7 @@ class SearchIndex {
         // Boost if query intent matches node type
         if (vaIntent && (entry.node.type === "media_characters" || entry.node.type === "voice_actor_index")) norm += 15;
         if (charIntent && entry.node.type === "media_characters") norm += 10;
+        if (whoIntent && entry.node.type === "media_characters") norm += 12;
         if (norm > score) { score = norm; matchedField = "bm25"; }
       }
 
@@ -330,6 +332,26 @@ export class VaultContext {
   search(query: string): VaultSearchResult[] {
     if (!this.index) return [];
     const results = this.index.search(query);
+
+    // Direct heading match: find nodes where a ## heading contains the query words
+    const cleanQuery = query.replace(/who\s+(is|was|voices|voiced|plays|played|acts|acted|portrays|portrayed)\s*/gi, "").trim().toLowerCase();
+    if (cleanQuery.length >= 2) {
+      const headingHits: VaultSearchResult[] = [];
+      for (const node of this.nodes) {
+        if (node.type !== "media_characters") continue;
+        const bodyLines = node.body.split("\n");
+        for (const line of bodyLines) {
+          if (line.startsWith("## ") && line.toLowerCase().includes(cleanQuery)) {
+            headingHits.push({ node, score: 95, matchedField: `heading:${line.slice(3).trim()}` });
+            break;
+          }
+        }
+      }
+      if (headingHits.length > 0) {
+        headingHits.sort((a, b) => b.score - a.score);
+        return headingHits.slice(0, 20);
+      }
+    }
 
     // Multi-term fallback: when search gives low scores, find nodes containing ALL query terms
     const needsFallback = results.length === 0 || results[0].score < 30;

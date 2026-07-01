@@ -1,5 +1,5 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
-import type AnisyncPlugin from "./main";
+import AnisyncPlugin, { ClearCacheConfirmModal } from "./main";
 import { fetchModels } from "./openrouter/client";
 
 export class AnisyncSettingTab extends PluginSettingTab {
@@ -311,16 +311,8 @@ export class AnisyncSettingTab extends PluginSettingTab {
           .addButton((btn) =>
             btn
               .setButtonText("Clear cache")
-              .onClick(async () => {
-            try {
-              await this.plugin.clearCache();
-              new Notice("Cache cleared. Next sync will be a full re-download.", 5000);
-            } catch (e) {
-              const msg = (e as Error)?.message ?? String(e);
-              new Notice(`Failed to clear cache: ${msg}`, 6000);
-            } finally {
-              this.plugin.refreshSettingsTab();
-            }
+              .onClick(() => {
+            new ClearCacheConfirmModal(this.plugin.app, this.plugin).open();
           }),
       );
   }

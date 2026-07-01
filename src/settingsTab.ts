@@ -381,8 +381,12 @@ export class AnisyncSettingTab extends PluginSettingTab {
       .setDesc("Update graph.json with the colours above.")
       .addButton((btn) =>
         btn.setButtonText("Apply").setCta().onClick(async () => {
-          await this.plugin.applyGraphColors();
-          new Notice("Graph colours applied. Reopen the graph panel to see changes.", 6000);
+          const ok = await this.plugin.applyGraphColors();
+          if (ok) {
+            new Notice("Graph colours applied. Reopen the graph panel to see changes.", 6000);
+          } else {
+            new Notice("Failed to apply graph colours. Check console for details.", 6000);
+          }
         }),
       );
   }
@@ -415,7 +419,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
   }
 
   private getTimeAgo(date: Date): string {
-    const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+    const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
     if (seconds < 60) return "just now";
     if (seconds < 3600) return Math.floor(seconds / 60) + " minutes";
     if (seconds < 86400) return Math.floor(seconds / 3600) + " hours";

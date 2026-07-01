@@ -420,36 +420,36 @@ export class VaultContext {
     if (!this.index) return [];
     const results = this.index.search(query);
 
-    // Heading index: direct O(1) lookup for character names
-    const cleanQuery = query
-      .replace(/who\s+(is|was|voices|voiced|plays|played|acts|acted|portrays|portrayed)\s*/gi, "")
-      .replace(/va\s+(of|for)\s*/gi, "")
-      .replace(/voice\s+actor\s+(of|for)\s*/gi, "")
-      .replace(/who\s+(is|was|the)\s+/gi, "")
-      .replace(/what\s+(is|was)\s+/gi, "")
-      .trim()
-      .toLowerCase();
-    if (cleanQuery.length >= 2) {
-      const headingIds = this.index.findHeading(cleanQuery);
-      if (headingIds.length > 0) {
-        const headingHits: VaultSearchResult[] = [];
-        for (const id of headingIds) {
+    // Heading index: find the best heading match for any word in the query
+    const queryWords = query.toLowerCase().trim().split(/[\s,.\-!?()]+/).filter(w => w.length > 2);
+    if (queryWords.length > 0) {
+      const headingHits: VaultSearchResult[] = [];
+      for (const word of queryWords) {
+        const ids = this.index.findHeading(word);
+        for (const id of ids) {
           const node = this.nodes.find(n => n.id === id);
-          if (node) headingHits.push({ node, score: 95, matchedField: `heading:${cleanQuery}` });
+          if (node && !headingHits.some(h => h.node.id === id)) {
+            headingHits.push({ node, score: 95, matchedField: `heading:${word}` });
+          }
         }
+      }
+      if (headingHits.length > 0) {
         // Link graph: also include files linked from matched files
         const linkedIds = new Set<string>();
-        for (const id of headingIds) {
-          for (const linked of this.index.findLinks(id)) {
-            const linkedNode = this.nodes.find(n => n.title.toLowerCase().includes(linked.toLowerCase()) || n.path.toLowerCase().includes(linked.toLowerCase()));
-            if (linkedNode && !headingIds.includes(linkedNode.id)) linkedIds.add(linkedNode.id);
+        for (const h of headingHits) {
+          for (const linked of this.index.findLinks(h.node.id)) {
+            const linkedNode = this.nodes.find(n =>
+              n.title.toLowerCase().includes(linked.toLowerCase()) ||
+              n.path.toLowerCase().includes(linked.toLowerCase())
+            );
+            if (linkedNode && !headingHits.some(hh => hh.node.id === linkedNode.id)) linkedIds.add(linkedNode.id);
           }
         }
         for (const id of linkedIds) {
           const node = this.nodes.find(n => n.id === id);
-          if (node) headingHits.push({ node, score: 60, matchedField: `link:${cleanQuery}` });
+          if (node) headingHits.push({ node, score: 65, matchedField: `link:${queryWords[0]}` });
         }
-        return headingHits.slice(0, 20);
+        return headingHits.slice(0, 10);
       }
     }
 

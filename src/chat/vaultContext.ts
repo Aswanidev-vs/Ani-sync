@@ -76,17 +76,40 @@ interface IndexEntry {
   totalTokens: number;
 }
 
+interface Block {
+  heading: string;
+  content: string;
+  tokens: string[];
+  tokenFreq: Map<string, number>;
+  trigrams: Set<string>;
+}
+
+interface LinkInfo {
+  sourceId: string;
+  targetFile: string;
+  text: string;
+}
+
 class SearchIndex {
   entries: IndexEntry[] = [];
   private df = new Map<string, number>();
   private totalDocs = 0;
   // Heading index: lowercase heading → list of node ids
   private headingIndex = new Map<string, string[]>();
+  // Block index: node id → list of blocks (## sections)
+  private blockIndex = new Map<string, Block[]>();
+  // Link graph: node id → outgoing wikilinks
+  private linkGraph = new Map<string, LinkInfo[]>();
+  // Metadata index: frontmatter field name → value → set of node ids
+  private metaIndex = new Map<string, Map<string, Set<string>>>();
 
   build(nodes: VaultNode[]): void {
     this.entries = [];
     this.df.clear();
     this.headingIndex.clear();
+    this.blockIndex.clear();
+    this.linkGraph.clear();
+    this.metaIndex.clear();
     this.totalDocs = nodes.length;
 
     for (const node of nodes) {
@@ -106,16 +129,73 @@ class SearchIndex {
         this.df.set(token, (this.df.get(token) ?? 0) + 1);
       }
 
-      // Extract ## headings for heading index
+      // Extract ## headings for heading index + block index
       const lines = node.body.split("\n");
+      const blocks: Block[] = [];
+      let currentHeading = "";
+      let currentLines: string[] = [];
+
       for (const line of lines) {
         if (line.startsWith("## ")) {
-          const heading = line.slice(3).trim().toLowerCase();
-          if (heading.length >= 2) {
-            if (!this.headingIndex.has(heading)) this.headingIndex.set(heading, []);
-            this.headingIndex.get(heading)!.push(node.id);
+          // Save previous block
+          if (currentHeading) {
+            const content = currentLines.join("\n");
+            const tokens = tokenize(content);
+            const tokenFreq = new Map<string, number>();
+            for (const t of tokens) tokenFreq.set(t, (tokenFreq.get(t) ?? 0) + 1);
+            blocks.push({ heading: currentHeading, content, tokens, tokenFreq, trigrams: buildTrigrams(content) });
           }
+          currentHeading = line.slice(3).trim();
+          currentLines = [];
+
+          // Heading index
+          const headingLower = currentHeading.toLowerCase();
+          if (headingLower.length >= 2) {
+            if (!this.headingIndex.has(headingLower)) this.headingIndex.set(headingLower, []);
+            this.headingIndex.get(headingLower)!.push(node.id);
+          }
+        } else {
+          currentLines.push(line);
         }
+      }
+      // Save last block
+      if (currentHeading) {
+        const content = currentLines.join("\n");
+        const tokens = tokenize(content);
+        const tokenFreq = new Map<string, number>();
+        for (const t of tokens) tokenFreq.set(t, (tokenFreq.get(t) ?? 0) + 1);
+        blocks.push({ heading: currentHeading, content, tokens, tokenFreq, trigrams: buildTrigrams(content) });
+      }
+      this.blockIndex.set(node.id, blocks);
+
+      // Link graph: extract [[wikilinks]]
+      const links: LinkInfo[] = [];
+      for (const line of lines) {
+        const linkRegex = /\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]/g;
+        let match;
+        while ((match = linkRegex.exec(line)) !== null) {
+          links.push({ sourceId: node.id, targetFile: match[1].trim(), text: match[2]?.trim() ?? match[1].trim() });
+        }
+      }
+      if (links.length > 0) this.linkGraph.set(node.id, links);
+
+      // Metadata index: index type, mediaType, voiceActors, genres
+      const metaFields: [string, string][] = [];
+      if (node.frontmatter.type) metaFields.push(["type", String(node.frontmatter.type).toLowerCase()]);
+      if (node.frontmatter.mediaType) metaFields.push(["mediaType", String(node.frontmatter.mediaType).toLowerCase()]);
+      if (node.frontmatter.status) metaFields.push(["status", String(node.frontmatter.status).toLowerCase()]);
+      if (Array.isArray(node.frontmatter.voiceActors)) {
+        for (const va of node.frontmatter.voiceActors) metaFields.push(["voiceActor", String(va).toLowerCase()]);
+      }
+      if (Array.isArray(node.frontmatter.genres)) {
+        for (const g of node.frontmatter.genres) metaFields.push(["genre", String(g).toLowerCase()]);
+      }
+
+      for (const [field, value] of metaFields) {
+        if (!this.metaIndex.has(field)) this.metaIndex.set(field, new Map());
+        const valMap = this.metaIndex.get(field)!;
+        if (!valMap.has(value)) valMap.set(value, new Set());
+        valMap.get(value)!.add(node.id);
       }
 
       this.entries.push({
@@ -135,6 +215,39 @@ class SearchIndex {
       if (heading.includes(q) && q.length >= 3) return ids;
     }
     return [];
+  }
+
+  findLinks(nodeId: string): string[] {
+    const links = this.linkGraph.get(nodeId) ?? [];
+    return links.map(l => l.targetFile);
+  }
+
+  metaFilter(field: string, value: string): Set<string> {
+    return this.metaIndex.get(field)?.get(value.toLowerCase()) ?? new Set();
+  }
+
+  getBlocks(nodeId: string): Block[] {
+    return this.blockIndex.get(nodeId) ?? [];
+  }
+
+  scoreBlock(block: Block, queryTokens: string[], queryTrigrams: Set<string>): number {
+    const qLower = queryTokens.join(" ");
+    // Exact heading match
+    if (block.heading.toLowerCase().includes(qLower)) return 100;
+    // Trigram similarity on heading
+    const headingTrigrams = buildTrigrams(block.heading.toLowerCase());
+    const headingSim = jaccard(queryTrigrams, headingTrigrams);
+    if (headingSim > 0.5) return 60 + headingSim * 40;
+    // BM25 on block content
+    const avgDl = this.totalDocs > 1 ? 200 : 1;
+    let score = 0;
+    for (const term of queryTokens) {
+      const tf = block.tokenFreq.get(term) ?? 0;
+      const idf = this.idf(term);
+      if (idf === 0) continue;
+      score += idf * ((tf * 2.5) / (tf + 1.5 * (1 - 0.75 + 0.75 * (block.tokens.length / avgDl))));
+    }
+    return Math.min(80, score * 15);
   }
 
   private idf(term: string): number {
@@ -369,12 +482,33 @@ export class VaultContext {
           const node = this.nodes.find(n => n.id === id);
           if (node) headingHits.push({ node, score: 95, matchedField: `heading:${cleanQuery}` });
         }
-        return headingHits;
+        // Link graph: also include files linked from matched files
+        const linkedIds = new Set<string>();
+        for (const id of headingIds) {
+          for (const linked of this.index.findLinks(id)) {
+            const linkedNode = this.nodes.find(n => n.title.toLowerCase().includes(linked.toLowerCase()) || n.path.toLowerCase().includes(linked.toLowerCase()));
+            if (linkedNode && !headingIds.includes(linkedNode.id)) linkedIds.add(linkedNode.id);
+          }
+        }
+        for (const id of linkedIds) {
+          const node = this.nodes.find(n => n.id === id);
+          if (node) headingHits.push({ node, score: 60, matchedField: `link:${cleanQuery}` });
+        }
+        return headingHits.slice(0, 20);
       }
     }
 
+    // Metadata filter: detect type-specific queries
+    const typeFilter = /anime|manga/i.test(query) ? (query.toLowerCase().includes("manga") ? "manga" : "anime") : null;
+    const filteredResults = results.filter(r => {
+      if (!typeFilter) return true;
+      const nodeType = String(r.node.frontmatter.type ?? "").toLowerCase();
+      const mediaType = String(r.node.frontmatter.mediaType ?? "").toLowerCase();
+      return nodeType === typeFilter || mediaType === typeFilter || r.node.type === typeFilter;
+    });
+
     // Multi-term fallback: when search gives low scores, find nodes containing ALL query terms
-    const needsFallback = results.length === 0 || results[0].score < 30;
+    const needsFallback = filteredResults.length === 0 || filteredResults[0].score < 30;
     if (needsFallback) {
       const tokens = query.toLowerCase().trim().split(/[\s,.\-!?()]+/).filter(t => t.length > 2);
       const jpTokens = [...query.toLowerCase()].filter(c => /[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(c));
@@ -432,12 +566,38 @@ export class VaultContext {
       if (n.frontmatter.language) lines.push(`  Language: ${n.frontmatter.language}`);
       if (n.frontmatter.tags && Array.isArray(n.frontmatter.tags)) lines.push(`  Tags: ${n.frontmatter.tags.join(", ")}`);
 
-      // Full body content
-      const bodyLines = n.body.split("\n");
-      for (const line of bodyLines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith("![") || trimmed.startsWith("|")) continue;
-        lines.push(`  ${trimmed}`);
+      // Block-level selection: score each ## section independently
+      const blocks = this.index?.getBlocks(n.id) ?? [];
+      if (blocks.length > 0 && r.score < 95) {
+        // Only include blocks that match the query
+        const queryTokens = tokenize(r.matchedField.replace(/heading:|trigram:|bm25:|multi:|link:|title:|frontmatter:/g, ""));
+        const queryTrigrams = buildTrigrams(queryTokens.join(" "));
+        const relevantBlocks = blocks
+          .map(b => ({ block: b, score: this.index!.scoreBlock(b, queryTokens, queryTrigrams) }))
+          .filter(b => b.score > 10 || b.block.heading.toLowerCase().includes(queryTokens.join(" ")))
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 8);
+
+        for (const { block } of relevantBlocks) {
+          lines.push(`  [## ${block.heading}]`);
+          const blockLines = block.content.split("\n");
+          let bodyLen = 0;
+          for (const line of blockLines) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith("![") || trimmed.startsWith("|")) continue;
+            if (bodyLen >= 15000) break;
+            lines.push(`  ${trimmed}`);
+            bodyLen += trimmed.length;
+          }
+        }
+      } else {
+        // Full body for high-score matches or when no blocks available
+        const bodyLines = n.body.split("\n");
+        for (const line of bodyLines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith("![") || trimmed.startsWith("|")) continue;
+          lines.push(`  ${trimmed}`);
+        }
       }
 
       lines.push(`  Matched via: ${r.matchedField} (score: ${r.score.toFixed(1)})`);

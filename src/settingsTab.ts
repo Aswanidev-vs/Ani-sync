@@ -408,16 +408,8 @@ export class AnisyncSettingTab extends PluginSettingTab {
       .addButton((btn) =>
         btn
           .setButtonText("Clear cache")
-          .onClick(async () => {
-            try {
-              await this.plugin.clearCache();
-              new Notice("Cache cleared. Next sync will be a full re-download.", 5000);
-            } catch (e) {
-              const msg = (e as Error)?.message ?? String(e);
-              new Notice(`Failed to clear cache: ${msg}`, 6000);
-            } finally {
-              this.plugin.refreshSettingsTab();
-            }
+          .onClick(() => {
+            new ClearCacheConfirmModal(this.app, this.plugin).open();
           }),
       );
   }

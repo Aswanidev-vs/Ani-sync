@@ -1,5 +1,5 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
-import type AnisyncPlugin from "./main";
+import AnisyncPlugin, { ClearCacheConfirmModal } from "./main";
 import { fetchModels } from "./openrouter/client";
 
 export class AnisyncSettingTab extends PluginSettingTab {

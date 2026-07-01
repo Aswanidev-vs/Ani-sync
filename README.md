@@ -1,7 +1,7 @@
 # Ani-sync
 
 <p align="center">
-  <img src="assets/logo.svg" alt="Ani-sync Logo" width="120" height="120"/>
+  <img src="assets/logo.png" alt="Ani-sync Logo" width="120" height="120"/>
 </p>
 
 An Obsidian plugin that syncs your [AniList](https://anilist.co/) anime & manga lists into your vault as wikilinked markdown notes, so they show up in Obsidian's graph view. Includes an AI-powered chat assistant to query your library using natural language.

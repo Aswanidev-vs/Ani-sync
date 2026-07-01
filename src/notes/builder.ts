@@ -155,6 +155,8 @@ export function buildAll(
     }
   }
 
+  // Suppress duplicate characters from sequel entries (e.g. BLEACH split into cours).\n  // If a character appears in both a prequel and its sequel, only keep it in the prequel.\n  const originalCharIds = new Map<number, Set<number>>();\n  for (const m of mediaNotes) {\n    originalCharIds.set(m.mediaId, new Set(m.characters.map(c => c.id)));\n  }\n  for (const m of mediaNotes) {\n    const detail = details.get(`${m.type}:${m.mediaId}`);\n    if (!detail?.relations?.edges) continue;\n    const sequelIds = new Set<number>();\n    for (const edge of detail.relations.edges) {\n      if (!edge?.node) continue;\n      if (edge.relationType === "SEQUEL") sequelIds.add(edge.node.id);\n    }\n    if (sequelIds.size === 0) continue;\n    const currentCharIds = originalCharIds.get(m.mediaId);\n    if (!currentCharIds) continue;\n    for (const sm of mediaNotes) {\n      if (!sequelIds.has(sm.mediaId)) continue;\n      sm.characters = sm.characters.filter(c => !currentCharIds.has(c.id));\n    }\n  }
+
   return {
     profile: { viewer, animeCount: countEntries(animeLists), mangaCount: countEntries(mangaLists), animeLists, mangaLists },
     media: mediaNotes,
@@ -435,11 +437,24 @@ export function buildArtifacts(built: BuiltArtifacts, syncedAt: string): NoteArt
     mediaBySlug.get(slug)!.push(m);
   }
 
+  // Build character → media cross-reference map for split entries (e.g. BLEACH multi-cour)
+  const charMediaLookup = new Map<number, { mediaId: number; title: string; type: string }[]>();
+  for (const m of built.media) {
+    const mediaTitle = pickTitle(m.title);
+    for (const c of m.characters) {
+      if (!charMediaLookup.has(c.id)) charMediaLookup.set(c.id, []);
+      const list = charMediaLookup.get(c.id)!;
+      if (!list.some(e => e.mediaId === m.mediaId)) {
+        list.push({ mediaId: m.mediaId, title: mediaTitle, type: m.type });
+      }
+    }
+  }
+
   for (const [slug, mediaList] of mediaBySlug) {
     if (mediaList.length === 1) {
-      artifacts.push(buildMediaCharacterArtifact(mediaList[0], built.characters, syncedAt));
+      artifacts.push(buildMediaCharacterArtifact(mediaList[0], built.characters, charMediaLookup, syncedAt));
     } else {
-      artifacts.push(buildMergedCharacterArtifact(mediaList, built.characters, syncedAt));
+      artifacts.push(buildMergedCharacterArtifact(mediaList, built.characters, charMediaLookup, syncedAt));
     }
   }
 
@@ -682,6 +697,7 @@ export function buildTagArtifact(tag: TagArtifactData, syncedAt: string): NoteAr
 export function buildMediaCharacterArtifact(
   mediaNote: MediaNote,
   characters: Map<number, CharacterArtifactData>,
+  charMediaLookup: Map<number, { mediaId: number; title: string; type: string }[]>,
   syncedAt: string,
 ): NoteArtifact {
   const title = pickTitle(mediaNote.title);
@@ -743,6 +759,19 @@ export function buildMediaCharacterArtifact(
       body.push(ch.description);
       body.push("");
     }
+
+    // Cross-media references: show other Ani-sync entries this character appears in
+    const allMedia = charMediaLookup.get(c.id) ?? [];
+    const otherMedia = allMedia.filter(m => m.mediaId !== mediaNote.mediaId);
+    if (otherMedia.length > 0) {
+      body.push("### Also appears in");
+      body.push("");
+      for (const m of otherMedia) {
+        const folder = m.type === "ANIME" ? "Anime" : "Manga";
+        body.push(`- [[${folder}/${slugify(m.title)}|${m.title}]]`);
+      }
+      body.push("");
+    }
   }
 
   body.push(`[AniList - ${title}](${mediaNote.siteUrl ?? ""})`);
@@ -758,6 +787,7 @@ export function buildMediaCharacterArtifact(
 export function buildMergedCharacterArtifact(
   mediaNotes: MediaNote[],
   characters: Map<number, CharacterArtifactData>,
+  charMediaLookup: Map<number, { mediaId: number; title: string; type: string }[]>,
   syncedAt: string,
 ): NoteArtifact {
   const primaryNote = mediaNotes[0];
@@ -851,6 +881,21 @@ export function buildMergedCharacterArtifact(
 
     if (ch.description) {
       body.push(ch.description);
+      body.push("");
+    }
+
+    // Cross-media references: show other Ani-sync entries this character appears in
+    // (exclude media already merged with the same slug)
+    const mergedIds = new Set(mediaNotes.map(m => m.mediaId));
+    const allMedia = charMediaLookup.get(charId) ?? [];
+    const otherMedia = allMedia.filter(m => !mergedIds.has(m.mediaId));
+    if (otherMedia.length > 0) {
+      body.push("### Also appears in");
+      body.push("");
+      for (const m of otherMedia) {
+        const folder = m.type === "ANIME" ? "Anime" : "Manga";
+        body.push(`- [[${folder}/${slugify(m.title)}|${m.title}]]`);
+      }
       body.push("");
     }
   }

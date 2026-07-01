@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
+import { App, Modal, Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
 import { ChatView, CHAT_VIEW_TYPE } from "./chat/view";
 import { AnisyncSettings, DEFAULT_SETTINGS } from "./settings";
 import { AnisyncSettingTab } from "./settingsTab";
@@ -413,5 +413,45 @@ export default class AnisyncPlugin extends Plugin {
         }
       },
     };
+  }
+}
+
+export class ClearCacheConfirmModal extends Modal {
+  private plugin: AnisyncPlugin;
+
+  constructor(app: App, plugin: AnisyncPlugin) {
+    super(app);
+    this.plugin = plugin;
+  }
+
+  onOpen(): void {
+    const { contentEl, titleEl } = this;
+    titleEl.setText("Clear sync cache?");
+
+    contentEl.createEl("p", {
+      text: "This will wipe all cached AniList data, triggering a full re-download on the next sync. This can use a large portion of your AniList API rate limit and may result in temporary rate-limiting if you re-sync immediately.",
+    });
+
+    const btnDiv = contentEl.createDiv({ cls: "modal-button-container" });
+
+    const cancelBtn = btnDiv.createEl("button", { text: "Cancel", cls: "mod-cta" });
+    cancelBtn.onclick = () => this.close();
+
+    const clearBtn = btnDiv.createEl("button", { text: "Clear Cache", cls: "mod-warning" });
+    clearBtn.onclick = async () => {
+      try {
+        await this.plugin.clearCache();
+        new Notice("Cache cleared. Next sync will be a full re-download.", 5000);
+      } catch (e) {
+        new Notice(`Failed to clear cache: ${(e as Error)?.message ?? e}`, 6000);
+      } finally {
+        this.plugin.refreshSettingsTab();
+        this.close();
+      }
+    };
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
   }
 }

@@ -233,29 +233,51 @@ export class AnisyncSettingTab extends PluginSettingTab {
         }),
       );
 
-    new Setting(containerEl)
-      .setName("Model")
-      .setDesc("Select an OpenRouter model for chat.")
-      .addText((text) => {
-        text
-          .setPlaceholder("Search models...")
-          .setValue("")
-          .onChange(async (value) => {
-            this.updateModelDropdown(value);
-          });
-        text.inputEl.style.width = "100%";
-      });
+    // Searchable model selector — search box + dropdown in one card
+    const modelCard = containerEl.createDiv({ cls: "anisync-model-card" });
+    modelCard.createEl("h4", { text: "Model" }).style.cssText = "margin: 0 0 4px 0; font-size: 14px;";
 
-    const modelSelectEl = containerEl.createEl("select", { cls: "anisync-model-select" });
-    modelSelectEl.style.cssText = "width: 100%; margin-top: 6px; padding: 6px; border-radius: 6px; background: var(--background-secondary); color: var(--text-normal); border: 1px solid var(--background-modifier-border);";
-    this.modelSelectEl = modelSelectEl;
+    const searchInput = modelCard.createEl("input", { attr: { type: "text", placeholder: "Search models... (e.g. nemotron, free, qwen)" } });
+    searchInput.style.cssText = "width: 100%; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--background-modifier-border); background: var(--background-secondary); color: var(--text-normal); font-size: 13px; margin-bottom: 6px; box-sizing: border-box;";
 
-    modelSelectEl.addEventListener("change", async () => {
-      s.openrouterModel = modelSelectEl.value;
+    const modelDropdown = modelCard.createEl("select");
+    modelDropdown.style.cssText = "width: 100%; padding: 6px; border-radius: 6px; background: var(--background-secondary); color: var(--text-normal); border: 1px solid var(--background-modifier-border); font-size: 13px; box-sizing: border-box;";
+    this.modelSelectEl = modelDropdown;
+
+    const updateDropdown = (filter: string) => {
+      const models = s.openrouterAvailableModels;
+      const q = filter.toLowerCase().trim();
+      modelDropdown.innerHTML = "";
+
+      const filtered = q ? models.filter((m) =>
+        m.id.toLowerCase().includes(q) ||
+        m.name.toLowerCase().includes(q) ||
+        (m.isFree && "free".includes(q))
+      ) : models;
+
+      if (filtered.length === 0) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = models.length === 0 ? "No models — fetch first" : "No matches";
+        modelDropdown.appendChild(opt);
+      } else {
+        for (const m of filtered) {
+          const opt = document.createElement("option");
+          opt.value = m.id;
+          opt.textContent = m.isFree ? `[Free] ${m.name}` : m.name;
+          if (m.id === s.openrouterModel) opt.selected = true;
+          modelDropdown.appendChild(opt);
+        }
+      }
+    };
+
+    searchInput.addEventListener("input", () => updateDropdown(searchInput.value));
+    modelDropdown.addEventListener("change", async () => {
+      s.openrouterModel = modelDropdown.value;
       await this.plugin.saveSettings();
     });
 
-    this.updateModelDropdown("");
+    updateDropdown("");
   }
 
   private renderGraphColorsSection(containerEl: HTMLElement): void {
@@ -344,33 +366,5 @@ export class AnisyncSettingTab extends PluginSettingTab {
     return Math.floor(seconds / 86400) + " days";
   }
 
-  private updateModelDropdown(filter: string): void {
-    if (!this.modelSelectEl) return;
-    const s = this.plugin.settings;
-    const models = s.openrouterAvailableModels;
-    const q = filter.toLowerCase().trim();
 
-    this.modelSelectEl.innerHTML = "";
-
-    const filtered = q ? models.filter((m) =>
-      m.id.toLowerCase().includes(q) ||
-      m.name.toLowerCase().includes(q) ||
-      (m.isFree && "free".includes(q))
-    ) : models;
-
-    if (filtered.length === 0) {
-      const opt = document.createElement("option");
-      opt.value = "";
-      opt.textContent = models.length === 0 ? "No models — fetch first" : "No matches";
-      this.modelSelectEl.appendChild(opt);
-    } else {
-      for (const m of filtered) {
-        const opt = document.createElement("option");
-        opt.value = m.id;
-        opt.textContent = m.isFree ? `[Free] ${m.name}` : m.name;
-        if (m.id === s.openrouterModel) opt.selected = true;
-        this.modelSelectEl.appendChild(opt);
-      }
-    }
-  }
 }

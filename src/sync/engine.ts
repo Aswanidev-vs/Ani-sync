@@ -168,12 +168,15 @@ export class SyncEngine {
       if (!m) return false;
       const chars = m.characters as { edges?: unknown[]; pageInfo?: { hasNextPage?: boolean } } | null | undefined;
       if (!chars?.edges) return false;
-      return chars.pageInfo?.hasNextPage || (chars.pageInfo == null && chars.edges.length >= 50);
+      return chars.edges.length >= 50 && (chars.pageInfo?.hasNextPage ?? true);
     });
     if (needsMoreChars.length > 0) {
       await pMapLimit(needsMoreChars, 4, async (m) => {
         if (this.cancelled) return;
-        const rest = await this.anilist.fetchAllCharacters(m.id, m.type);
+        const existingCount = m.characters?.edges?.length ?? 0;
+        const rest = await this.anilist.fetchAllCharacters(m.id, m.type, 2);
+        const fetchedCount = rest.length;
+        this.onLog?.(`  ${m.type}:${m.id}: had ${existingCount} chars from batch, fetched ${fetchedCount} more`);
         const existing = m.characters?.edges ?? [];
         m.characters = { edges: [...existing, ...rest], pageInfo: { hasNextPage: false } } as typeof m.characters;
       });

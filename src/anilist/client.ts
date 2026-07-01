@@ -197,9 +197,9 @@ export class AnilistClient {
     return out;
   }
 
-  async fetchAllCharacters(mediaId: number, type: "ANIME" | "MANGA"): Promise<AnilistCharacterEdge[]> {
+  async fetchAllCharacters(mediaId: number, type: "ANIME" | "MANGA", startPage = 1): Promise<AnilistCharacterEdge[]> {
     const edgeMap = new Map<string, AnilistCharacterEdge>();
-    let page = 1;
+    let page = startPage;
     while (true) {
       const data = await this.request<{
         Media: { characters: { pageInfo: { hasNextPage: boolean }; edges: AnilistCharacterEdge[] } };
@@ -233,14 +233,15 @@ export class AnilistClient {
 
     const allEdges = [...edgeMap.values()];
 
-    // Filter to Japanese VAs per character; fall back to all VAs if none tagged Japanese
+    // Filter to Japanese VAs per character; fall back to all VAs if none tagged Japanese.
+    // AniList may not tag every VA with a language; untagged VAs are kept as fallback
+    // so we never silently drop valid voice actor data.
     for (const edge of allEdges) {
       if (edge.voiceActors && edge.voiceActors.length > 0) {
         const japanese = edge.voiceActors.filter(va => va?.language === "Japanese");
         if (japanese.length > 0) {
           edge.voiceActors = japanese;
         }
-        // else keep all VAs as-is (fallback)
       }
     }
 

@@ -76,14 +76,6 @@ interface IndexEntry {
   totalTokens: number;
 }
 
-interface Block {
-  heading: string;
-  content: string;
-  tokens: string[];
-  tokenFreq: Map<string, number>;
-  trigrams: Set<string>;
-}
-
 interface LinkInfo {
   sourceId: string;
   targetFile: string;
@@ -96,8 +88,6 @@ class SearchIndex {
   private totalDocs = 0;
   // Heading index: lowercase heading → list of node ids
   private headingIndex = new Map<string, string[]>();
-  // Block index: node id → list of blocks (## sections)
-  private blockIndex = new Map<string, Block[]>();
   // Link graph: node id → outgoing wikilinks
   private linkGraph = new Map<string, LinkInfo[]>();
   // Metadata index: frontmatter field name → value → set of node ids
@@ -107,7 +97,6 @@ class SearchIndex {
     this.entries = [];
     this.df.clear();
     this.headingIndex.clear();
-    this.blockIndex.clear();
     this.linkGraph.clear();
     this.metaIndex.clear();
     this.totalDocs = nodes.length;
@@ -133,40 +122,17 @@ class SearchIndex {
         tokenDocCount.set(token, (tokenDocCount.get(token) ?? 0) + 1);
       }
 
-      // Extract ## blocks
+      // Extract ## headings for heading index
       const lines = node.body.split("\n");
-      const blocks: Block[] = [];
-      let currentHeading = "";
-      let currentLines: string[] = [];
-
       for (const line of lines) {
         if (line.startsWith("## ")) {
-          if (currentHeading) {
-            const content = currentLines.join("\n");
-            const tokens = tokenize(content);
-            const tokenFreq = new Map<string, number>();
-            for (const t of tokens) tokenFreq.set(t, (tokenFreq.get(t) ?? 0) + 1);
-            blocks.push({ heading: currentHeading, content, tokens, tokenFreq, trigrams: buildTrigrams(content) });
-          }
-          currentHeading = line.slice(3).trim();
-          currentLines = [];
-          const headingLower = currentHeading.toLowerCase();
+          const headingLower = line.slice(3).trim().toLowerCase();
           if (headingLower.length >= 2) {
             if (!this.headingIndex.has(headingLower)) this.headingIndex.set(headingLower, []);
             this.headingIndex.get(headingLower)!.push(node.id);
           }
-        } else {
-          currentLines.push(line);
         }
       }
-      if (currentHeading) {
-        const content = currentLines.join("\n");
-        const tokens = tokenize(content);
-        const tokenFreq = new Map<string, number>();
-        for (const t of tokens) tokenFreq.set(t, (tokenFreq.get(t) ?? 0) + 1);
-        blocks.push({ heading: currentHeading, content, tokens, tokenFreq, trigrams: buildTrigrams(content) });
-      }
-      this.blockIndex.set(node.id, blocks);
 
       // Link graph
       const links: LinkInfo[] = [];
@@ -225,30 +191,6 @@ class SearchIndex {
 
   metaFilter(field: string, value: string): Set<string> {
     return this.metaIndex.get(field)?.get(value.toLowerCase()) ?? new Set();
-  }
-
-  getBlocks(nodeId: string): Block[] {
-    return this.blockIndex.get(nodeId) ?? [];
-  }
-
-  scoreBlock(block: Block, queryTokens: string[], queryTrigrams: Set<string>): number {
-    const qLower = queryTokens.join(" ");
-    // Exact heading match
-    if (block.heading.toLowerCase().includes(qLower)) return 100;
-    // Trigram similarity on heading
-    const headingTrigrams = buildTrigrams(block.heading.toLowerCase());
-    const headingSim = jaccard(queryTrigrams, headingTrigrams);
-    if (headingSim > 0.5) return 60 + headingSim * 40;
-    // BM25 on block content
-    const avgDl = this.totalDocs > 1 ? 200 : 1;
-    let score = 0;
-    for (const term of queryTokens) {
-      const tf = block.tokenFreq.get(term) ?? 0;
-      const idf = this.idf(term);
-      if (idf === 0) continue;
-      score += idf * ((tf * 2.5) / (tf + 1.5 * (1 - 0.75 + 0.75 * (block.tokens.length / avgDl))));
-    }
-    return Math.min(80, score * 15);
   }
 
   private idf(term: string): number {
@@ -560,16 +502,12 @@ export class VaultContext {
 
   buildPromptContext(results: VaultSearchResult[]): string {
     if (results.length === 0) return "No matching data found in your AniList library.";
-
-    const HEADER = "The following data is from the user's synced AniList library (vault). Answer ONLY from this information.\n---";
-    const BUDGET = 195000; // ~48K tokens, leaves room for 2K output
-    let used = HEADER.length;
-
-    const parts: string[] = [HEADER];
+    const parts = [
+      "The following data is from the user's synced AniList library (vault). Answer ONLY from this information.",
+      "---",
+    ];
 
     for (const r of results.slice(0, 10)) {
-      if (used >= BUDGET) break;
-
       const n = r.node;
       const lines: string[] = [];
       lines.push(`${n.type.toUpperCase()}: "${n.title}"`);
@@ -583,64 +521,18 @@ export class VaultContext {
       if (n.frontmatter.language) lines.push(`  Language: ${n.frontmatter.language}`);
       if (n.frontmatter.tags && Array.isArray(n.frontmatter.tags)) lines.push(`  Tags: ${n.frontmatter.tags.join(", ")}`);
 
-      const fmBlock = lines.join("\n");
-      if (used + fmBlock.length >= BUDGET) break;
-      used += fmBlock.length;
-      parts.push(fmBlock);
-
-      // Block-level selection with budget awareness
-      const blocks = this.index?.getBlocks(n.id) ?? [];
-      if (blocks.length > 0) {
-        const queryTokens = tokenize(r.matchedField.replace(/heading:|trigram:|bm25:|multi:|link:|title:|frontmatter:/g, ""));
-        const queryTrigrams = buildTrigrams(queryTokens.join(" "));
-        const scored = blocks.map(b => ({ block: b, score: this.index!.scoreBlock(b, queryTokens, queryTrigrams) }))
-          .filter(b => b.score > 10 || b.block.heading.toLowerCase().includes(queryTokens.join(" ")))
-          .sort((a, b) => b.score - a.score);
-
-        // Always include the top-scoring block (likely the match)
-        // Plus any blocks that contain the query terms
-        for (const { block } of scored) {
-          if (used >= BUDGET) break;
-          const sectionHeader = `  [## ${block.heading}]`;
-          if (used + sectionHeader.length >= BUDGET) break;
-          used += sectionHeader.length;
-          parts.push(sectionHeader);
-
-          let sectionLen = 0;
-          const blockLines = block.content.split("\n");
-          for (const line of blockLines) {
-            const trimmed = line.trim();
-            if (!trimmed || trimmed.startsWith("![") || trimmed.startsWith("|")) continue;
-            if (sectionLen >= 20000) break;
-            const lineLen = trimmed.length + 2;
-            if (used + lineLen >= BUDGET) break;
-            used += lineLen;
-            sectionLen += lineLen;
-            parts.push(`  ${trimmed}`);
-          }
-        }
-      } else {
-        // Full body for heading matches or when no blocks
-        const bodyLines = n.body.split("\n");
-        for (const line of bodyLines) {
-          if (used >= BUDGET) break;
-          const trimmed = line.trim();
-          if (!trimmed || trimmed.startsWith("![") || trimmed.startsWith("|")) continue;
-          const lineLen = trimmed.length + 2;
-          if (used + lineLen >= BUDGET) break;
-          used += lineLen;
-          parts.push(`  ${trimmed}`);
-        }
+      // Full body content — no truncation, no block selection
+      const bodyLines = n.body.split("\n");
+      for (const line of bodyLines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("![") || trimmed.startsWith("|")) continue;
+        lines.push(`  ${trimmed}`);
       }
 
-      parts.push(`  Matched via: ${r.matchedField} (score: ${r.score.toFixed(1)})`);
+      lines.push(`  Matched via: ${r.matchedField} (score: ${r.score.toFixed(1)})`);
+      parts.push(lines.join("\n"));
       parts.push("---");
     }
-
-    if (used >= BUDGET) {
-      parts.push(`  [Context truncated to fit model limit — ${used.toLocaleString()} chars used]`);
-    }
-
     return parts.join("\n");
   }
 

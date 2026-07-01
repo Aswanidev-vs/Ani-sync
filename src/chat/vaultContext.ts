@@ -177,11 +177,33 @@ class SearchIndex {
     const q = query.toLowerCase().trim();
     // Exact heading match
     if (this.headingIndex.has(q)) return this.headingIndex.get(q)!;
-    // Partial heading match (query is contained in heading)
+    // Return ALL partial heading matches
+    const allIds = new Set<string>();
     for (const [heading, ids] of this.headingIndex) {
-      if (heading.includes(q) && q.length >= 3) return ids;
+      if (heading.includes(q) && q.length >= 3) {
+        for (const id of ids) allIds.add(id);
+      }
     }
-    return [];
+    return [...allIds];
+  }
+
+  // Like findHeading but prefers word-boundary matches over substring-inside-word matches
+  findHeadingSmart(query: string): string[] {
+    const q = query.toLowerCase().trim();
+    // Exact match first
+    if (this.headingIndex.has(q)) return this.headingIndex.get(q)!;
+    // Check for word-boundary match (heading starts with word, or contains " word")
+    const wordBoundaryIds = new Set<string>();
+    const substringIds = new Set<string>();
+    for (const [heading, ids] of this.headingIndex) {
+      if (heading === q || heading.startsWith(q + " ") || heading.startsWith(q + ",") || heading.includes(" " + q) || heading.includes(" " + q + ",") || heading.includes(" " + q + "'") || heading.includes(" " + q + "-")) {
+        for (const id of ids) wordBoundaryIds.add(id);
+      } else if (heading.includes(q) && q.length >= 3) {
+        for (const id of ids) substringIds.add(id);
+      }
+    }
+    // Prefer word-boundary matches; fall back to substring if none
+    return wordBoundaryIds.size > 0 ? [...wordBoundaryIds] : [...substringIds];
   }
 
   findLinks(nodeId: string): string[] {
@@ -424,13 +446,19 @@ export class VaultContext {
     const queryWords = query.toLowerCase().trim().split(/[\s,.\-!?()]+/).filter(w => w.length > 2);
     if (queryWords.length > 0) {
       const headingHits: VaultSearchResult[] = [];
+      const seenIds = new Set<string>();
       for (const word of queryWords) {
-        const ids = this.index.findHeading(word);
+        const ids = this.index.findHeadingSmart(word);
         for (const id of ids) {
+          if (seenIds.has(id)) continue;
+          seenIds.add(id);
+          // Calculate match quality: prefer whole-word matches over substring matches
           const node = this.nodes.find(n => n.id === id);
-          if (node && !headingHits.some(h => h.node.id === id)) {
-            headingHits.push({ node, score: 95, matchedField: `heading:${word}` });
-          }
+          if (!node) continue;
+          // Find the exact heading that matched for score quality
+          const nodeHeadings = this.index.findHeading(word);
+          const matchesWell = nodeHeadings.some(hid => hid === id);
+          headingHits.push({ node, score: matchesWell ? 95 : 85, matchedField: `heading:${word}` });
         }
       }
       if (headingHits.length > 0) {

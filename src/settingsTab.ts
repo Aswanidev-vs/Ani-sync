@@ -4,7 +4,6 @@ import { fetchModels } from "./openrouter/client";
 
 export class AnisyncSettingTab extends PluginSettingTab {
   private plugin: AnisyncPlugin;
-  private modelSelectEl: HTMLSelectElement | null = null;
 
   constructor(app: App, plugin: AnisyncPlugin) {
     super(app, plugin);
@@ -104,12 +103,11 @@ export class AnisyncSettingTab extends PluginSettingTab {
       new Setting(containerEl)
         .setName("Disconnect")
         .setDesc("Remove your AniList connection.")
-            .addButton((btn) =>
-              btn
-                .setButtonText("Disconnect")
-                .onClick(() => {
-              console.log("Ani-sync: disconnect button clicked, plugin=", this.plugin);
-              this.plugin.disconnectAnilist().then(() => {
+        .addButton((btn) =>
+          btn
+            .setButtonText("Disconnect")
+            .onClick(() => {
+              void this.plugin.disconnectAnilist().then(() => {
                 new Notice("Disconnected from AniList.", 3000);
               }).catch((e) => {
                 const msg = e?.message ?? String(e);
@@ -120,7 +118,6 @@ export class AnisyncSettingTab extends PluginSettingTab {
             }),
         );
     }
-
   }
 
   private renderSyncSettingsSection(containerEl: HTMLElement): void {
@@ -177,13 +174,15 @@ export class AnisyncSettingTab extends PluginSettingTab {
   private renderOpenRouterSection(containerEl: HTMLElement): void {
     const s = this.plugin.settings;
 
-    containerEl.createEl("h3", { text: "OpenRouter AI" });
-    containerEl.createEl("p", {
-      text: "Configure an OpenRouter API key to enable the AI chat sidebar.",
-      cls: "setting-item-description",
+    const section = containerEl.createDiv({ cls: "anisync-openrouter-panel" });
+    const hero = section.createDiv({ cls: "anisync-openrouter-hero" });
+    hero.createDiv({ cls: "anisync-openrouter-kicker", text: "AI Routing" });
+    hero.createEl("h3", { text: "OpenRouter AI" });
+    hero.createEl("p", {
+      text: "Search and pin a valid model for the current API key without fighting a cramped native dropdown.",
     });
 
-    new Setting(containerEl)
+    new Setting(section)
       .setName("API key")
       .setDesc("Your OpenRouter API key. Stored locally in your vault settings.")
       .addText((text) => {
@@ -201,9 +200,10 @@ export class AnisyncSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           });
         text.inputEl.type = "password";
+        text.inputEl.addClass("anisync-openrouter-key-input");
       });
 
-    new Setting(containerEl)
+    new Setting(section)
       .setName("Fetch available models")
       .setDesc("Retrieve the list of models from OpenRouter. Free models are tagged.")
       .addButton((btn) =>
@@ -233,51 +233,115 @@ export class AnisyncSettingTab extends PluginSettingTab {
         }),
       );
 
-    // Searchable model selector — search box + dropdown in one card
-    const modelCard = containerEl.createDiv({ cls: "anisync-model-card" });
-    modelCard.createEl("h4", { text: "Model" }).style.cssText = "margin: 0 0 4px 0; font-size: 14px;";
+    this.renderModelPicker(section);
+  }
 
-    const searchInput = modelCard.createEl("input", { attr: { type: "text", placeholder: "Search models... (e.g. nemotron, free, qwen)" } });
-    searchInput.style.cssText = "width: 100%; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--background-modifier-border); background: var(--background-secondary); color: var(--text-normal); font-size: 13px; margin-bottom: 6px; box-sizing: border-box;";
+  private renderModelPicker(containerEl: HTMLElement): void {
+    const s = this.plugin.settings;
+    const card = containerEl.createDiv({ cls: "anisync-model-picker" });
 
-    const modelDropdown = modelCard.createEl("select");
-    modelDropdown.style.cssText = "width: 100%; padding: 6px; border-radius: 6px; background: var(--background-secondary); color: var(--text-normal); border: 1px solid var(--background-modifier-border); font-size: 13px; box-sizing: border-box;";
-    this.modelSelectEl = modelDropdown;
-
-    const updateDropdown = (filter: string) => {
-      const models = s.openrouterAvailableModels;
-      const q = filter.toLowerCase().trim();
-      modelDropdown.innerHTML = "";
-
-      const filtered = q ? models.filter((m) =>
-        m.id.toLowerCase().includes(q) ||
-        m.name.toLowerCase().includes(q) ||
-        (m.isFree && "free".includes(q))
-      ) : models;
-
-      if (filtered.length === 0) {
-        const opt = document.createElement("option");
-        opt.value = "";
-        opt.textContent = models.length === 0 ? "No models — fetch first" : "No matches";
-        modelDropdown.appendChild(opt);
-      } else {
-        for (const m of filtered) {
-          const opt = document.createElement("option");
-          opt.value = m.id;
-          opt.textContent = m.isFree ? `[Free] ${m.name}` : m.name;
-          if (m.id === s.openrouterModel) opt.selected = true;
-          modelDropdown.appendChild(opt);
-        }
-      }
-    };
-
-    searchInput.addEventListener("input", () => updateDropdown(searchInput.value));
-    modelDropdown.addEventListener("change", async () => {
-      s.openrouterModel = modelDropdown.value;
-      await this.plugin.saveSettings();
+    const header = card.createDiv({ cls: "anisync-model-picker-header" });
+    const titleWrap = header.createDiv();
+    titleWrap.createEl("h4", { text: "Model" });
+    titleWrap.createEl("p", { text: "Search by provider, family, price tier, or context window." });
+    header.createDiv({
+      cls: "anisync-model-picker-badge",
+      text: s.openrouterAvailableModels.length > 0 ? `${s.openrouterAvailableModels.length} loaded` : "No list",
     });
 
-    updateDropdown("");
+    const selected = card.createDiv({ cls: "anisync-model-selected" });
+    const selectedLabel = selected.createDiv({ cls: "anisync-model-selected-label" });
+    const selectedMeta = selected.createDiv({ cls: "anisync-model-selected-meta" });
+
+    const searchWrap = card.createDiv({ cls: "anisync-model-search-wrap" });
+    const searchIcon = searchWrap.createSpan({ cls: "anisync-model-search-icon" });
+    searchIcon.innerHTML = "&#8981;";
+    const searchInput = searchWrap.createEl("input", {
+      cls: "anisync-model-search-input",
+      attr: { type: "text", placeholder: "Search models... e.g. nemotron, qwen, free, 128k" },
+    });
+
+    const list = card.createDiv({ cls: "anisync-model-list" });
+
+    const updateSelected = () => {
+      const model = s.openrouterAvailableModels.find((m) => m.id === s.openrouterModel);
+      if (!model) {
+        selected.addClass("is-empty");
+        selectedLabel.setText("No model selected");
+        selectedMeta.setText("Fetch models for this API key, then pick one route for chat.");
+        return;
+      }
+      selected.removeClass("is-empty");
+      selectedLabel.setText(model.isFree ? `[Free] ${model.name}` : model.name);
+      const provider = model.id.split("/")[0] ?? "provider";
+      const ctx = model.context_length ? `${Math.round(model.context_length / 1000)}k ctx` : "ctx unknown";
+      selectedMeta.setText(`${provider} · ${ctx} · ${model.id}`);
+    };
+
+    const renderList = async () => {
+      list.empty();
+      const q = searchInput.value.toLowerCase().trim();
+      const models = s.openrouterAvailableModels.filter((m) => {
+        if (!q) return true;
+        const hay = [
+          m.id,
+          m.name,
+          m.description ?? "",
+          m.isFree ? "free" : "paid",
+          String(m.context_length),
+          `${Math.round(m.context_length / 1000)}k`,
+        ].join(" ").toLowerCase();
+        return hay.includes(q);
+      });
+
+      if (s.openrouterAvailableModels.length === 0) {
+        const empty = list.createDiv({ cls: "anisync-model-empty" });
+        empty.createEl("strong", { text: "No models loaded" });
+        empty.createEl("span", { text: "Enter a key and fetch models first." });
+        updateSelected();
+        return;
+      }
+
+      if (models.length === 0) {
+        const empty = list.createDiv({ cls: "anisync-model-empty" });
+        empty.createEl("strong", { text: "No matches" });
+        empty.createEl("span", { text: "Try provider names, model families, or 'free'." });
+        updateSelected();
+        return;
+      }
+
+      for (const model of models.slice(0, 60)) {
+        const item = list.createDiv({ cls: "anisync-model-option" });
+        if (model.id === s.openrouterModel) item.addClass("is-selected");
+
+        const top = item.createDiv({ cls: "anisync-model-option-top" });
+        top.createSpan({ cls: "anisync-model-option-name", text: model.name });
+        top.createSpan({
+          cls: model.isFree ? "anisync-model-chip is-free" : "anisync-model-chip",
+          text: model.isFree ? "Free" : "Paid",
+        });
+
+        const meta = item.createDiv({ cls: "anisync-model-option-meta" });
+        meta.createSpan({ text: model.id });
+        meta.createSpan({ text: `${Math.round(model.context_length / 1000)}k ctx` });
+
+        if (model.description) {
+          item.createDiv({ cls: "anisync-model-option-desc", text: model.description });
+        }
+
+        item.onclick = async () => {
+          s.openrouterModel = model.id;
+          await this.plugin.saveSettings();
+          updateSelected();
+          await renderList();
+        };
+      }
+
+      updateSelected();
+    };
+
+    searchInput.addEventListener("input", () => { void renderList(); });
+    void renderList();
   }
 
   private renderGraphColorsSection(containerEl: HTMLElement): void {
@@ -298,7 +362,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
       cls: "setting-item-description",
     });
 
-    for (const [key, label, _default] of labels) {
+    for (const [key, label] of labels) {
       new Setting(containerEl)
         .setName(label)
         .addColorPicker((picker) =>
@@ -341,10 +405,10 @@ export class AnisyncSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Clear sync cache")
       .setDesc("Force a complete re-sync by clearing all cached data.")
-          .addButton((btn) =>
-            btn
-              .setButtonText("Clear cache")
-              .onClick(async () => {
+      .addButton((btn) =>
+        btn
+          .setButtonText("Clear cache")
+          .onClick(async () => {
             try {
               await this.plugin.clearCache();
               new Notice("Cache cleared. Next sync will be a full re-download.", 5000);
@@ -365,6 +429,4 @@ export class AnisyncSettingTab extends PluginSettingTab {
     if (seconds < 86400) return Math.floor(seconds / 3600) + " hours";
     return Math.floor(seconds / 86400) + " days";
   }
-
-
 }

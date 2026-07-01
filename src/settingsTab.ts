@@ -4,6 +4,7 @@ import { fetchModels } from "./openrouter/client";
 
 export class AnisyncSettingTab extends PluginSettingTab {
   private plugin: AnisyncPlugin;
+  private modelSelectEl: HTMLSelectElement | null = null;
 
   constructor(app: App, plugin: AnisyncPlugin) {
     super(app, plugin);
@@ -235,22 +236,26 @@ export class AnisyncSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Model")
       .setDesc("Select an OpenRouter model for chat.")
-      .addDropdown((dropdown) => {
-        const models = s.openrouterAvailableModels;
-        if (models.length > 0) {
-          for (const m of models) {
-            const label = m.isFree ? `[Free] ${m.name}` : m.name;
-            dropdown.addOption(m.id, label);
-          }
-          dropdown.setValue(s.openrouterModel || models[0].id);
-        } else {
-          dropdown.addOption("", "No models — fetch first");
-        }
-        dropdown.onChange(async (value) => {
-          s.openrouterModel = value;
-          await this.plugin.saveSettings();
-        });
+      .addText((text) => {
+        text
+          .setPlaceholder("Search models...")
+          .setValue("")
+          .onChange(async (value) => {
+            this.updateModelDropdown(value);
+          });
+        text.inputEl.style.width = "100%";
       });
+
+    const modelSelectEl = containerEl.createEl("select", { cls: "anisync-model-select" });
+    modelSelectEl.style.cssText = "width: 100%; margin-top: 6px; padding: 6px; border-radius: 6px; background: var(--background-secondary); color: var(--text-normal); border: 1px solid var(--background-modifier-border);";
+    this.modelSelectEl = modelSelectEl;
+
+    modelSelectEl.addEventListener("change", async () => {
+      s.openrouterModel = modelSelectEl.value;
+      await this.plugin.saveSettings();
+    });
+
+    this.updateModelDropdown("");
   }
 
   private renderGraphColorsSection(containerEl: HTMLElement): void {
@@ -337,5 +342,35 @@ export class AnisyncSettingTab extends PluginSettingTab {
     if (seconds < 3600) return Math.floor(seconds / 60) + " minutes";
     if (seconds < 86400) return Math.floor(seconds / 3600) + " hours";
     return Math.floor(seconds / 86400) + " days";
+  }
+
+  private updateModelDropdown(filter: string): void {
+    if (!this.modelSelectEl) return;
+    const s = this.plugin.settings;
+    const models = s.openrouterAvailableModels;
+    const q = filter.toLowerCase().trim();
+
+    this.modelSelectEl.innerHTML = "";
+
+    const filtered = q ? models.filter((m) =>
+      m.id.toLowerCase().includes(q) ||
+      m.name.toLowerCase().includes(q) ||
+      (m.isFree && "free".includes(q))
+    ) : models;
+
+    if (filtered.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = models.length === 0 ? "No models — fetch first" : "No matches";
+      this.modelSelectEl.appendChild(opt);
+    } else {
+      for (const m of filtered) {
+        const opt = document.createElement("option");
+        opt.value = m.id;
+        opt.textContent = m.isFree ? `[Free] ${m.name}` : m.name;
+        if (m.id === s.openrouterModel) opt.selected = true;
+        this.modelSelectEl.appendChild(opt);
+      }
+    }
   }
 }

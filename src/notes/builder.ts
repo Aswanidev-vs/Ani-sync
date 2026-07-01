@@ -155,30 +155,7 @@ export function buildAll(
     }
   }
 
-  // Suppress duplicate characters from sequel entries (e.g. BLEACH split into cours).
-  // If a character appears in both a prequel and its sequel, only keep it in the prequel.
-  const charToMedia = new Map<number, Set<number>>();
-  for (const m of mediaNotes) {
-    for (const c of m.characters) {
-      if (!charToMedia.has(c.id)) charToMedia.set(c.id, new Set());
-      charToMedia.get(c.id)!.add(m.mediaId);
-    }
-  }
-  for (const m of mediaNotes) {
-    const detail = details.get(`${m.type}:${m.mediaId}`);
-    if (!detail?.relations?.edges) continue;
-    const sequelIds = new Set<number>();
-    for (const edge of detail.relations.edges) {
-      if (!edge?.node) continue;
-      if (edge.relationType === "SEQUEL") sequelIds.add(edge.node.id);
-    }
-    if (sequelIds.size === 0) continue;
-    const currentCharIds = new Set(m.characters.map(c => c.id));
-    for (const sm of mediaNotes) {
-      if (!sequelIds.has(sm.mediaId)) continue;
-      sm.characters = sm.characters.filter(c => !currentCharIds.has(c.id));
-    }
-  }
+  // Suppress duplicate characters from sequel entries (e.g. BLEACH split into cours).\n  // If a character appears in both a prequel and its sequel, only keep it in the prequel.\n  const originalCharIds = new Map<number, Set<number>>();\n  for (const m of mediaNotes) {\n    originalCharIds.set(m.mediaId, new Set(m.characters.map(c => c.id)));\n  }\n  for (const m of mediaNotes) {\n    const detail = details.get(`${m.type}:${m.mediaId}`);\n    if (!detail?.relations?.edges) continue;\n    const sequelIds = new Set<number>();\n    for (const edge of detail.relations.edges) {\n      if (!edge?.node) continue;\n      if (edge.relationType === "SEQUEL") sequelIds.add(edge.node.id);\n    }\n    if (sequelIds.size === 0) continue;\n    const currentCharIds = originalCharIds.get(m.mediaId);\n    if (!currentCharIds) continue;\n    for (const sm of mediaNotes) {\n      if (!sequelIds.has(sm.mediaId)) continue;\n      sm.characters = sm.characters.filter(c => !currentCharIds.has(c.id));\n    }\n  }
 
   return {
     profile: { viewer, animeCount: countEntries(animeLists), mangaCount: countEntries(mangaLists), animeLists, mangaLists },

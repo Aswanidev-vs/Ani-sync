@@ -112,6 +112,9 @@ class SearchIndex {
     this.metaIndex.clear();
     this.totalDocs = nodes.length;
 
+    // Pre-compute token frequencies for IDF
+    const tokenDocCount = new Map<string, number>();
+
     for (const node of nodes) {
       const titleStr = `${node.title} ${node.frontmatter.name ?? ""} ${node.frontmatter.nativeName ?? ""}`;
       const titleTokens = tokenize(titleStr);
@@ -125,11 +128,12 @@ class SearchIndex {
       const titleTrigrams = buildTrigrams(titleStr);
       const bodyTrigrams = buildTrigrams(`${titleStr} ${node.body}`);
 
-      for (const token of new Set([...titleTokens, ...bodyTokens])) {
-        this.df.set(token, (this.df.get(token) ?? 0) + 1);
+      const allTokens = new Set([...titleTokens, ...bodyTokens]);
+      for (const token of allTokens) {
+        tokenDocCount.set(token, (tokenDocCount.get(token) ?? 0) + 1);
       }
 
-      // Extract ## headings for heading index + block index
+      // Extract ## blocks
       const lines = node.body.split("\n");
       const blocks: Block[] = [];
       let currentHeading = "";
@@ -137,7 +141,6 @@ class SearchIndex {
 
       for (const line of lines) {
         if (line.startsWith("## ")) {
-          // Save previous block
           if (currentHeading) {
             const content = currentLines.join("\n");
             const tokens = tokenize(content);
@@ -147,8 +150,6 @@ class SearchIndex {
           }
           currentHeading = line.slice(3).trim();
           currentLines = [];
-
-          // Heading index
           const headingLower = currentHeading.toLowerCase();
           if (headingLower.length >= 2) {
             if (!this.headingIndex.has(headingLower)) this.headingIndex.set(headingLower, []);
@@ -158,7 +159,6 @@ class SearchIndex {
           currentLines.push(line);
         }
       }
-      // Save last block
       if (currentHeading) {
         const content = currentLines.join("\n");
         const tokens = tokenize(content);
@@ -168,7 +168,7 @@ class SearchIndex {
       }
       this.blockIndex.set(node.id, blocks);
 
-      // Link graph: extract [[wikilinks]]
+      // Link graph
       const links: LinkInfo[] = [];
       for (const line of lines) {
         const linkRegex = /\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]/g;
@@ -179,7 +179,7 @@ class SearchIndex {
       }
       if (links.length > 0) this.linkGraph.set(node.id, links);
 
-      // Metadata index: index type, mediaType, voiceActors, genres
+      // Metadata index
       const metaFields: [string, string][] = [];
       if (node.frontmatter.type) metaFields.push(["type", String(node.frontmatter.type).toLowerCase()]);
       if (node.frontmatter.mediaType) metaFields.push(["mediaType", String(node.frontmatter.mediaType).toLowerCase()]);
@@ -190,7 +190,6 @@ class SearchIndex {
       if (Array.isArray(node.frontmatter.genres)) {
         for (const g of node.frontmatter.genres) metaFields.push(["genre", String(g).toLowerCase()]);
       }
-
       for (const [field, value] of metaFields) {
         if (!this.metaIndex.has(field)) this.metaIndex.set(field, new Map());
         const valMap = this.metaIndex.get(field)!;
@@ -204,6 +203,8 @@ class SearchIndex {
         totalTokens: bodyTokens.length,
       });
     }
+
+    this.df = tokenDocCount;
   }
 
   findHeading(query: string): string[] {
@@ -365,9 +366,14 @@ export class VaultContext {
       if (!folder) return;
 
       const files = this.getAllMarkdownFiles(folder);
-      for (const file of files) {
-        const node = await this.parseFile(file);
-        if (node) this.nodes.push(node);
+      // Parallel file reads (batch of 20)
+      const BATCH = 20;
+      for (let i = 0; i < files.length; i += BATCH) {
+        const batch = files.slice(i, i + BATCH);
+        const nodes = await Promise.all(batch.map(f => this.parseFile(f)));
+        for (const node of nodes) {
+          if (node) this.nodes.push(node);
+        }
       }
       this.loaded = true;
       this.index = new SearchIndex();

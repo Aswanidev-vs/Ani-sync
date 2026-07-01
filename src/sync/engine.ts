@@ -169,7 +169,6 @@ export class SyncEngine {
 
     const detailsNeedingCharacters = [...details.values()].filter((m) => this.needsCharacterRefresh(m) || !!m.characters?.pageInfo?.hasNextPage);
     if (detailsNeedingCharacters.length > 0) {
-      onProgress(`Fetching all characters for ${detailsNeedingCharacters.length} media...`, 32);
       await pMapLimit(detailsNeedingCharacters, 4, async (m) => {
         if (this.cancelled) return;
         const fetchedEdges = await this.anilist.fetchAllCharacters(m.id, m.type);

@@ -553,12 +553,16 @@ export class VaultContext {
 
   buildPromptContext(results: VaultSearchResult[]): string {
     if (results.length === 0) return "No matching data found in your AniList library.";
-    const parts = [
-      "The following data is from the user's synced AniList library (vault). Answer ONLY from this information.",
-      "---",
-    ];
+
+    const HEADER = "The following data is from the user's synced AniList library (vault). Answer ONLY from this information.\n---";
+    const BUDGET = 195000; // ~48K tokens, leaves room for 2K output
+    let used = HEADER.length;
+
+    const parts: string[] = [HEADER];
 
     for (const r of results.slice(0, 10)) {
+      if (used >= BUDGET) break;
+
       const n = r.node;
       const lines: string[] = [];
       lines.push(`${n.type.toUpperCase()}: "${n.title}"`);
@@ -572,44 +576,62 @@ export class VaultContext {
       if (n.frontmatter.language) lines.push(`  Language: ${n.frontmatter.language}`);
       if (n.frontmatter.tags && Array.isArray(n.frontmatter.tags)) lines.push(`  Tags: ${n.frontmatter.tags.join(", ")}`);
 
-      // Block-level selection: score each ## section independently
+      const fmBlock = lines.join("\n");
+      if (used + fmBlock.length >= BUDGET) break;
+      used += fmBlock.length;
+      parts.push(fmBlock);
+
+      // Block-level selection with budget awareness
       const blocks = this.index?.getBlocks(n.id) ?? [];
       if (blocks.length > 0 && r.score < 95) {
-        // Only include blocks that match the query
         const queryTokens = tokenize(r.matchedField.replace(/heading:|trigram:|bm25:|multi:|link:|title:|frontmatter:/g, ""));
         const queryTrigrams = buildTrigrams(queryTokens.join(" "));
-        const relevantBlocks = blocks
-          .map(b => ({ block: b, score: this.index!.scoreBlock(b, queryTokens, queryTrigrams) }))
+        const scored = blocks.map(b => ({ block: b, score: this.index!.scoreBlock(b, queryTokens, queryTrigrams) }))
           .filter(b => b.score > 10 || b.block.heading.toLowerCase().includes(queryTokens.join(" ")))
-          .sort((a, b) => b.score - a.score)
-          .slice(0, 8);
+          .sort((a, b) => b.score - a.score);
 
-        for (const { block } of relevantBlocks) {
-          lines.push(`  [## ${block.heading}]`);
+        for (const { block } of scored) {
+          if (used >= BUDGET) break;
+          const sectionHeader = `  [## ${block.heading}]`;
+          if (used + sectionHeader.length >= BUDGET) break;
+          used += sectionHeader.length;
+          parts.push(sectionHeader);
+
+          let sectionLen = 0;
           const blockLines = block.content.split("\n");
-          let bodyLen = 0;
           for (const line of blockLines) {
             const trimmed = line.trim();
             if (!trimmed || trimmed.startsWith("![") || trimmed.startsWith("|")) continue;
-            if (bodyLen >= 15000) break;
-            lines.push(`  ${trimmed}`);
-            bodyLen += trimmed.length;
+            if (sectionLen >= 15000) break;
+            const lineLen = trimmed.length + 2;
+            if (used + lineLen >= BUDGET) break;
+            used += lineLen;
+            sectionLen += lineLen;
+            parts.push(`  ${trimmed}`);
           }
         }
       } else {
-        // Full body for high-score matches or when no blocks available
+        // Full body for heading matches or when no blocks
         const bodyLines = n.body.split("\n");
         for (const line of bodyLines) {
+          if (used >= BUDGET) break;
           const trimmed = line.trim();
           if (!trimmed || trimmed.startsWith("![") || trimmed.startsWith("|")) continue;
-          lines.push(`  ${trimmed}`);
+          const lineLen = trimmed.length + 2;
+          if (used + lineLen >= BUDGET) break;
+          used += lineLen;
+          parts.push(`  ${trimmed}`);
         }
       }
 
-      lines.push(`  Matched via: ${r.matchedField} (score: ${r.score.toFixed(1)})`);
-      parts.push(lines.join("\n"));
+      parts.push(`  Matched via: ${r.matchedField} (score: ${r.score.toFixed(1)})`);
       parts.push("---");
     }
+
+    if (used >= BUDGET) {
+      parts.push(`  [Context truncated to fit model limit — ${used.toLocaleString()} chars used]`);
+    }
+
     return parts.join("\n");
   }
 

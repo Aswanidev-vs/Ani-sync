@@ -12,6 +12,7 @@ interface StreamingMessage {
   displayedContent: string;
   animationId: number | null;
   isComplete: boolean;
+  resolved: boolean;
   resolve: (value: void) => void;
 }
 
@@ -126,8 +127,15 @@ export class ChatView extends ItemView {
     // Preflight: check API key and model before vault load
     const apiKey = this.plugin.settings.openrouterApiKey;
     const model = this.plugin.settings.openrouterModel;
+    const availableModels = this.plugin.settings.openrouterAvailableModels;
     if (!apiKey || !model) {
       this.addAssistantMessage("Please configure your OpenRouter API key and select a model in **Settings → Ani-sync → OpenRouter AI**.");
+      this.sendBtn.disabled = false;
+      return;
+    }
+
+    if (availableModels.length > 0 && !availableModels.some((m) => m.id === model)) {
+      this.addAssistantMessage("Your selected OpenRouter model is no longer valid for the current API key. Re-fetch models in **Settings -> Ani-sync -> OpenRouter AI** and pick one again.");
       this.sendBtn.disabled = false;
       return;
     }
@@ -156,7 +164,7 @@ export class ChatView extends ItemView {
     try {
       this.currentStream = {
         bubbleEl, fullContent: "", displayedContent: "",
-        animationId: null, isComplete: false, resolve: () => {},
+        animationId: null, isComplete: false, resolved: false, resolve: () => {},
       };
 
       await sendChatStream(
@@ -169,10 +177,19 @@ export class ChatView extends ItemView {
         (token) => this.onTokenReceived(token),
       );
 
-      await new Promise<void>((resolve) => {
-        if (this.currentStream) this.currentStream.resolve = resolve;
-        this.finishStreaming();
-      });
+      if (this.currentStream) {
+        await new Promise<void>((resolve) => {
+          if (!this.currentStream) {
+            resolve();
+            return;
+          }
+          this.currentStream.resolve = resolve;
+          this.finishStreaming();
+          if (!this.currentStream.animationId) {
+            this.flushCompletedStream();
+          }
+        });
+      }
 
       if (!this.currentStream?.fullContent.trim()) {
         await this.renderMarkdown(bubbleEl, "No response received from the model.", false);
@@ -219,11 +236,8 @@ export class ChatView extends ItemView {
     if (s.displayedContent.length < s.fullContent.length) {
       s.animationId = requestAnimationFrame(() => this.typewriterLoop());
     } else if (s.isComplete) {
-      s.bubbleEl.empty();
-      MarkdownRenderer.render(this.plugin.app, s.fullContent, s.bubbleEl, "", this);
       s.animationId = null;
-      s.resolve();
-      this.scrollDown();
+      this.flushCompletedStream();
       return;
     } else {
       s.animationId = requestAnimationFrame(() => this.typewriterLoop());
@@ -241,6 +255,20 @@ export class ChatView extends ItemView {
 
   private finishStreaming(): void {
     if (this.currentStream) this.currentStream.isComplete = true;
+  }
+
+  private flushCompletedStream(): void {
+    const s = this.currentStream;
+    if (!s || s.resolved || !s.isComplete) return;
+
+    s.resolved = true;
+    void this.renderMarkdown(
+      s.bubbleEl,
+      s.fullContent.trim() ? s.fullContent : "No response received from the model.",
+      false,
+    ).finally(() => {
+      s.resolve();
+    });
   }
 
   private async renderMarkdown(el: HTMLDivElement, content: string, showCursor = false): Promise<void> {

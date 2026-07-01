@@ -5,11 +5,11 @@ const MODELS_URL = "https://openrouter.ai/api/v1/models";
 const CHAT_URL = "https://openrouter.ai/api/v1/chat/completions";
 const MODELS_CACHE_TTL_MS = 60 * 60 * 1000;
 
-let cachedModels: { data: OpenRouterModel[]; fetchedAt: number } | null = null;
+let cachedModels: { apiKey: string; data: OpenRouterModel[]; fetchedAt: number } | null = null;
 
 export async function fetchModels(apiKey: string): Promise<OpenRouterModel[]> {
   const now = Date.now();
-  if (cachedModels && (now - cachedModels.fetchedAt) < MODELS_CACHE_TTL_MS) {
+  if (cachedModels && cachedModels.apiKey === apiKey && (now - cachedModels.fetchedAt) < MODELS_CACHE_TTL_MS) {
     return cachedModels.data;
   }
   const response: RequestUrlResponse = await requestUrl({
@@ -41,7 +41,7 @@ export async function fetchModels(apiKey: string): Promise<OpenRouterModel[]> {
     context_length: m.context_length,
     isFree: parseFloat(m.pricing.prompt) === 0 && parseFloat(m.pricing.completion) === 0,
   }));
-  cachedModels = { data: models, fetchedAt: now };
+  cachedModels = { apiKey, data: models, fetchedAt: now };
   return models;
 }
 
@@ -53,6 +53,7 @@ export async function sendChat(
   const response: RequestUrlResponse = await requestUrl({
     url: CHAT_URL,
     method: "POST",
+    throw: false,
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
@@ -65,6 +66,16 @@ export async function sendChat(
       max_tokens: 2048,
     } satisfies { model: string; messages: OpenRouterMessage[]; stream: boolean; temperature: number; max_tokens: number }),
   });
+
+  if (response.status !== 200) {
+    let errorMsg = `OpenRouter returned HTTP ${response.status}`;
+    try {
+      const errBody = typeof response.json === "object" ? response.json : JSON.parse(response.text);
+      if (errBody?.error?.message) errorMsg = errBody.error.message;
+      else if (errBody?.error) errorMsg = JSON.stringify(errBody.error);
+    } catch { /* ignore */ }
+    throw new Error(errorMsg);
+  }
 
   const json = typeof response.json === "object" && response.json !== null
     ? response.json
@@ -87,6 +98,7 @@ export async function sendChatStream(
   const response: RequestUrlResponse = await requestUrl({
     url: CHAT_URL,
     method: "POST",
+    throw: false,
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
@@ -100,6 +112,16 @@ export async function sendChatStream(
       max_tokens: 2048,
     }),
   });
+
+  if (response.status !== 200) {
+    let errorMsg = `OpenRouter returned HTTP ${response.status}`;
+    try {
+      const errBody = typeof response.json === "object" ? response.json : JSON.parse(response.text);
+      if (errBody?.error?.message) errorMsg = errBody.error.message;
+      else if (errBody?.error) errorMsg = JSON.stringify(errBody.error);
+    } catch { /* ignore */ }
+    throw new Error(errorMsg);
+  }
 
   const text = response.text;
   let fullContent = "";

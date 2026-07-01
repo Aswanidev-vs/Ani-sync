@@ -61,6 +61,11 @@ export interface AnilistCharacterEdge {
   };
 }
 
+export interface AnilistCharacterConnection {
+  pageInfo?: { hasNextPage: boolean } | null;
+  edges?: AnilistCharacterEdge[] | null;
+}
+
 export interface AnilistVoiceActor {
   id: number;
   name: { full?: string | null; native?: string | null };
@@ -101,7 +106,7 @@ export interface MediaDetail {
   studios?: { edges?: AnilistStudioEdge[] | null } | null;
   staff?: { edges?: AnilistStaffEdge[] | null } | null;
   relations?: { edges?: AnilistRelationEdge[] | null } | null;
-  characters?: { edges?: AnilistCharacterEdge[] | null } | null;
+  characters?: AnilistCharacterConnection | null;
 }
 
 export interface MediaListEntry {

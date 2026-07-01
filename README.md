@@ -16,9 +16,11 @@ An Obsidian plugin that syncs your [AniList](https://anilist.co/) anime & manga 
 - **Works on mobile** — `isDesktopOnly: false`.
 - **AI Chat Assistant** — Ask questions about your anime/manga library using natural language, powered by OpenRouter LLMs.
 - **Live Typewriter Animation** — Responses stream character-by-character with a blinking cursor, just like ChatGPT.
-- **Hybrid Search Engine** — FTS + Trigram similarity + BM25 ranking for fast, typo-tolerant search across all synced data.
-- **Graph Colors** — Customize node colors for each note type in Obsidian's Graph View.
-- **Characters & Voice Actors** — Characters synced with inlined voice actor data (photo, name, language) and wikilink tags.
+- **Multi-layer Search Engine** — 6 indexing layers (HeadingIndex, BM25, Trigram, FTS, LinkGraph, MetadataIndex) for fast, accurate results.
+- **Smart Character/VA Search** — HeadingIndex provides O(1) lookups for `## CharacterName` across all files.
+- **Searchable Model Selector** — Type to filter OpenRouter models in Settings.
+- **Graph Colors** — Customize node colors for each note type in Obsidian's Graph View via `.obsidian/graph.json`.
+- **Characters & Voice Actors** — Characters synced per-anime with inlined VA data (photo, name, language) and wikilink tags.
 
 ## What gets synced
 
@@ -115,15 +117,18 @@ The plugin includes an AI-powered chat sidebar that lets you query your synced A
 
 ### Search Engine
 
-The chat uses a **hybrid search engine** with four layers:
+The chat uses a **6-layer search pipeline** that cascades until results are found:
 
 | Layer | Algorithm | Purpose |
 |-------|-----------|---------|
-| Exact match | Title, anilistId comparison | Instant for known names/IDs |
-| Substring match | Title, frontmatter contains query | Quick for partial names |
-| Trigram Jaccard | 3-char subsequence overlap | Typo-tolerant fuzzy matching ("atack" → "Attack") |
+| HeadingIndex | `##` heading HashMap (O(1)) | Instant character/VA name lookup — matches any word in query |
 | BM25 ranking | TF-IDF with field weighting | Statistical relevance ranking (title weighted 3x body) |
-| Multi-term fallback | Word-level intersection | Relationship queries ("Ichigo and Inoue's kid" → finds nodes with both terms) |
+| Trigram Jaccard | 3-char subsequence overlap | Typo-tolerant fuzzy matching ("atack" → "Attack") |
+| FTS (Full Text Search) | Tokenization + substring match | Direct title/frontmatter matching |
+| LinkGraph | Wikilink traversal | Follows `[[links]]` to related files from matched results |
+| Multi-term fallback | Word intersection across all nodes | Relationship queries ("Ichigo and Inoue's kid") |
+
+The heading index extracts all `##` headings from every file during build, providing O(1) lookups. Any word in the user's query can trigger a direct heading match — no fragile regex stripping needed.
 
 The search index is built in-memory on chat open (~200ms for 2000+ entries). Full `.md` body content is included in the prompt context.
 
@@ -232,7 +237,8 @@ AniList API
 │   │   └── cache.ts             Cache schema + diff algorithm
 │   ├── chat/
 │   │   ├── view.ts              Chat UI (typewriter, markdown, quick responses, error handling)
-│   │   └── vaultContext.ts      Hybrid search engine (trigram + BM25) + prompt builder
+│   │   ├── vaultContext.ts      6-layer search engine (HeadingIndex, BM25, Trigram, LinkGraph, MetadataIndex)
+│   │   └── logo.ts              Logo data URL for welcome screen
 │   └── openrouter/
 │       ├── client.ts            OpenRouter API (models list + streaming chat completions)
 │       └── types.ts             OpenRouter API types

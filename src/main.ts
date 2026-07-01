@@ -156,8 +156,7 @@ export default class AnisyncPlugin extends Plugin {
       if (raw.settings && typeof raw.settings === "object") {
         const loaded = raw.settings as unknown as Record<string, unknown>;
         if ("pollIntervalMinutes" in loaded && !("pollIntervalSeconds" in loaded)) {
-          const mins = Number(loaded.pollIntervalMinutes);
-          loaded.pollIntervalSeconds = Number.isFinite(mins) && mins > 0 ? Math.max(30, mins * 60) : 30;
+          loaded.pollIntervalSeconds = Math.max(30, ((loaded.pollIntervalMinutes as number) || 30) * 60);
           delete loaded.pollIntervalMinutes;
         }
         this.settings = { ...DEFAULT_SETTINGS, ...(loaded as Partial<AnisyncSettings>) };
@@ -231,7 +230,7 @@ export default class AnisyncPlugin extends Plugin {
     }
   }
 
-  async applyGraphColors(): Promise<boolean> {
+  async applyGraphColors(): Promise<void> {
     try {
       const path = ".obsidian/graph.json";
       const adapter = this.app.vault.adapter;
@@ -262,10 +261,8 @@ export default class AnisyncPlugin extends Plugin {
       }
       graph.colorGroups = kept;
       await adapter.write(path, JSON.stringify(graph, null, 2));
-      return true;
     } catch (e) {
       console.error("Ani-sync: failed to apply graph colors", e);
-      return false;
     }
   }
 

@@ -40,9 +40,15 @@ export class AnisyncSettingTab extends PluginSettingTab {
     const s = this.plugin.settings;
     const hasToken = !!s.anilistToken;
 
-    containerEl.createEl("h3", { text: "AniList Connection" });
+    const section = containerEl.createDiv({ cls: "anisync-openrouter-panel" });
+    const hero = section.createDiv({ cls: "anisync-openrouter-hero" });
+    hero.createDiv({ cls: "anisync-openrouter-kicker", text: "Authentication" });
+    hero.createEl("h3", { text: "AniList Connection" });
+    hero.createEl("p", {
+      text: "Link your AniList account to sync anime and manga lists into your vault.",
+    });
 
-    const card = containerEl.createDiv({ cls: "anisync-status-card" });
+    const card = section.createDiv({ cls: "anisync-status-card" });
     const row = card.createDiv({ cls: "anisync-status-row" });
     row.createDiv({ cls: hasToken ? "anisync-indicator anisync-indicator-ok" : "anisync-indicator anisync-indicator-warn" });
     const text = row.createSpan({ cls: "anisync-status-text" });
@@ -62,12 +68,18 @@ export class AnisyncSettingTab extends PluginSettingTab {
   private renderSyncSection(containerEl: HTMLElement): void {
     const s = this.plugin.settings;
 
-    containerEl.createEl("h3", { text: "Sync" });
+    const section = containerEl.createDiv({ cls: "anisync-openrouter-panel" });
+    const hero = section.createDiv({ cls: "anisync-openrouter-hero" });
+    hero.createDiv({ cls: "anisync-openrouter-kicker", text: "Sync Status" });
+    hero.createEl("h3", { text: "Sync" });
+    hero.createEl("p", {
+      text: "Monitor sync status and manage your AniList connection.",
+    });
 
     if (s.lastSyncAt) {
       const dt = new Date(s.lastSyncAt);
       const ago = this.getTimeAgo(dt);
-      const el = containerEl.createDiv({ cls: "anisync-last-sync" });
+      const el = section.createDiv({ cls: "anisync-last-sync" });
       el.createSpan({ cls: "anisync-last-sync-label" }).setText("Last sync: ");
       el.createSpan({ cls: "anisync-last-sync-time" }).setText(ago + " ago");
       if (s.lastSyncStats) {
@@ -76,7 +88,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
     }
 
     if (s.anilistToken) {
-      new Setting(containerEl)
+      new Setting(section)
         .setName("AniList username")
         .setDesc("Auto-detected from your AniList account.")
         .addText((text) =>
@@ -87,7 +99,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
     }
 
     if (!s.anilistToken) {
-      new Setting(containerEl)
+      new Setting(section)
         .setName("Connect to AniList")
         .setDesc("Opens AniList authorization page. After approving, connection is established automatically.")
         .addButton((btn) =>
@@ -100,7 +112,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
             }),
         );
     } else {
-      new Setting(containerEl)
+      new Setting(section)
         .setName("Disconnect")
         .setDesc("Remove your AniList connection.")
         .addButton((btn) =>
@@ -123,7 +135,15 @@ export class AnisyncSettingTab extends PluginSettingTab {
   private renderSyncSettingsSection(containerEl: HTMLElement): void {
     const s = this.plugin.settings;
 
-    new Setting(containerEl)
+    const section = containerEl.createDiv({ cls: "anisync-openrouter-panel" });
+    const hero = section.createDiv({ cls: "anisync-openrouter-hero" });
+    hero.createDiv({ cls: "anisync-openrouter-kicker", text: "Configuration" });
+    hero.createEl("h3", { text: "Sync Settings" });
+    hero.createEl("p", {
+      text: "Configure where and how often your AniList data is synced.",
+    });
+
+    new Setting(section)
       .setName("Output folder")
       .setDesc("Vault folder where notes are created.")
       .addText((text) =>
@@ -136,7 +156,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
           }),
       );
 
-    new Setting(containerEl)
+    new Setting(section)
       .setName("Auto-sync")
       .setDesc("Automatically sync at regular intervals while Obsidian is open.")
       .addToggle((toggle) =>
@@ -153,7 +173,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
         }),
       );
 
-    new Setting(containerEl)
+    new Setting(section)
       .setName("Sync interval (seconds)")
       .setDesc("How often to check for updates (minimum 30 seconds).")
       .addText((text) =>
@@ -356,14 +376,16 @@ export class AnisyncSettingTab extends PluginSettingTab {
       ["characters", "Characters", "#fbbf24"],
     ];
 
-    containerEl.createEl("h3", { text: "Graph Colors" });
-    containerEl.createEl("p", {
+    const section = containerEl.createDiv({ cls: "anisync-openrouter-panel" });
+    const hero = section.createDiv({ cls: "anisync-openrouter-hero" });
+    hero.createDiv({ cls: "anisync-openrouter-kicker", text: "Customization" });
+    hero.createEl("h3", { text: "Graph Colors" });
+    hero.createEl("p", {
       text: "Customise the colours used for each note type in Obsidian's graph view.",
-      cls: "setting-item-description",
     });
 
     for (const [key, label] of labels) {
-      new Setting(containerEl)
+      new Setting(section)
         .setName(label)
         .addColorPicker((picker) =>
           picker
@@ -376,7 +398,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
         );
     }
 
-    new Setting(containerEl)
+    new Setting(section)
       .setName("Apply to graph now")
       .setDesc("Update graph.json with the colours above.")
       .addButton((btn) =>
@@ -388,9 +410,15 @@ export class AnisyncSettingTab extends PluginSettingTab {
   }
 
   private renderActionsSection(containerEl: HTMLElement): void {
-    containerEl.createEl("h3", { text: "Actions" });
+    const section = containerEl.createDiv({ cls: "anisync-openrouter-panel" });
+    const hero = section.createDiv({ cls: "anisync-openrouter-hero" });
+    hero.createDiv({ cls: "anisync-openrouter-kicker", text: "Utilities" });
+    hero.createEl("h3", { text: "Actions" });
+    hero.createEl("p", {
+      text: "Manually trigger sync, clear cache, or manage plugin data.",
+    });
 
-    new Setting(containerEl)
+    new Setting(section)
       .setName("Sync now")
       .setDesc("Manually trigger a sync with AniList.")
       .addButton((btn) =>
@@ -402,7 +430,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
           }),
       );
 
-    new Setting(containerEl)
+    new Setting(section)
       .setName("Clear sync cache")
       .setDesc("Force a complete re-sync by clearing all cached data.")
       .addButton((btn) =>

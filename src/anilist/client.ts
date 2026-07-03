@@ -18,6 +18,11 @@ const SLOW_INTERVAL_MS = 1500;
 const BATCH_PAGE_SIZE = 50;
 const BATCH_PAGE_SAFETY_CAP = 50;
 
+// Token bucket config
+const TOKEN_BUCKET_CAPACITY = 90;
+const TOKEN_BUCKET_REFILL_RATE = 90; // tokens per 60 seconds
+const TOKEN_BUCKET_REFILL_INTERVAL = 60000; // 60s
+
 export interface RetryInfo {
   attempt: number;
   waitMs: number;
@@ -36,14 +41,46 @@ export class AnilistClient {
   private onLog?: (message: string) => void;
   private onRetry?: (info: RetryInfo) => void;
 
+  // Token bucket fields
+  private tokens: number = TOKEN_BUCKET_CAPACITY;
+  private lastRefill: number = Date.now();
+
   constructor(token: string, options: AnilistClientOptions = {}) {
     this.token = token;
     this.onLog = options.onLog;
     this.onRetry = options.onRetry;
   }
 
+  private refillTokens(): void {
+    const now = Date.now();
+    const elapsed = now - this.lastRefill;
+    if (elapsed >= TOKEN_BUCKET_REFILL_INTERVAL) {
+      const refill = Math.floor(elapsed / TOKEN_BUCKET_REFILL_INTERVAL) * TOKEN_BUCKET_REFILL_RATE;
+      this.tokens = Math.min(TOKEN_BUCKET_CAPACITY, this.tokens + refill);
+      this.lastRefill += Math.floor(elapsed / TOKEN_BUCKET_REFILL_INTERVAL) * TOKEN_BUCKET_REFILL_INTERVAL;
+    }
+  }
+
+  private consumeToken(): number {
+    this.refillTokens();
+    if (this.tokens <= 0) {
+      // Calculate wait time until next token is available
+      const waitMs = Math.max(0, TOKEN_BUCKET_REFILL_INTERVAL - (Date.now() - this.lastRefill));
+      this.onLog?.("rate-limited: waiting for token bucket refill");
+      return waitMs;
+    }
+    this.tokens -= 1;
+    return 0;
+  }
+
   async request<T = unknown>(query: string, variables?: Record<string, unknown>): Promise<T> {
     return this.runWithRetry(async () => {
+      // Consume a token from the bucket before making the request
+      const bucketWait = this.consumeToken();
+      if (bucketWait > 0) {
+        await sleep(bucketWait);
+      }
+
       const response: RequestUrlResponse = await requestUrl({
         url: ENDPOINT,
         method: "POST",
@@ -69,8 +106,15 @@ export class AnilistClient {
         : JSON.parse(response.text)) as { data?: T; errors?: { message: string }[] };
 
       if (json.errors && json.errors.length > 0) {
-        const err = new Error(json.errors[0]?.message ?? "AniList error") as Error & { status: number };
+        const errMsg = json.errors[0]?.message ?? "AniList error";
+        const err = new Error(errMsg) as Error & { status: number };
         err.status = response.status;
+
+        // Detect 400 complexity errors — check for cost/complexity keywords
+        if (response.status === 400 && /(cost|complexity|too ?complex)/i.test(errMsg)) {
+          this.onLog?.(`  ! 400 complexity error: ${errMsg}`);
+        }
+
         throw err;
       }
 
@@ -120,20 +164,41 @@ export class AnilistClient {
       return await fn();
     } catch (err) {
       const e = err as Error & { status?: number; retryAfter?: number };
+      const errMsg = e?.message ?? "";
+
+      // 429 rate-limited: retry up to 3 times
       if (e?.status === 429 && attempt <= 3) {
         const waitMs = (e.retryAfter ?? 60) * 1000;
         this.currentInterval = SLOW_INTERVAL_MS;
         this.onRetry?.({ attempt, waitMs, reason: "rate-limited" });
+        this.onLog?.(`  ! rate-limited (attempt ${attempt}), waiting ${Math.round(waitMs / 1000)}s`);
         await sleep(waitMs);
         this.nextAllowedAt = Date.now() + this.currentInterval;
         return this.runWithRetry(fn, attempt + 1);
       }
+
+      // 400 complexity error: retry once with reduced perPage (caller handles via variables)
+      if (e?.status === 400 && /(cost|complexity|too ?complex)/i.test(errMsg) && attempt <= 2) {
+        const waitMs = 2000 * attempt;
+        this.onRetry?.({ attempt, waitMs, reason: "complexity-400" });
+        this.onLog?.(`  ! 400 complexity error (attempt ${attempt}), waiting ${waitMs}ms before retry`);
+        await sleep(waitMs);
+        this.nextAllowedAt = Date.now() + this.currentInterval;
+        // The retry will use the same fn which will be called with the same variables.
+        // For reduced perPage, the caller must catch 400 and re-invoke with lower perPage.
+        // Here we just retry the same call — if it fails again we let it throw.
+        return this.runWithRetry(fn, attempt + 1);
+      }
+
+      // 5xx server errors: retry up to 3 times with exponential backoff
       if (e?.status && e.status >= 500 && attempt <= 3) {
         const waitMs = 1000 * 2 ** (attempt - 1);
         this.onRetry?.({ attempt, waitMs, reason: `server ${e.status}` });
+        this.onLog?.(`  ! server ${e.status} (attempt ${attempt}), waiting ${waitMs}ms`);
         await sleep(waitMs);
         return this.runWithRetry(fn, attempt + 1);
       }
+
       throw err;
     }
   }
@@ -197,38 +262,97 @@ export class AnilistClient {
     return out;
   }
 
-  async fetchAllCharacters(mediaId: number, type: "ANIME" | "MANGA", startPage = 1): Promise<AnilistCharacterEdge[]> {
+  async fetchAllCharacters(mediaId: number, type: "ANIME" | "MANGA", startPage = 1, perPage = 50): Promise<AnilistCharacterEdge[]> {
     const edgeMap = new Map<string, AnilistCharacterEdge>();
     let page = startPage;
+    let consecutiveFailures = 0;
+    const MAX_CONSECUTIVE_FAILURES = 3;
+
     while (true) {
-      const data = await this.request<{
-        Media: { characters: { pageInfo: { hasNextPage: boolean }; edges: AnilistCharacterEdge[] } };
-      }>(CHARACTERS_PAGE_QUERY, { id: mediaId, type, page });
-      const conn = data?.Media?.characters;
-      if (!conn?.edges) break;
-      for (const e of conn.edges) {
-        if (!e?.node?.id) continue;
-        const key = `${e.node.id}:${e.role ?? ""}`;
-        const existing = edgeMap.get(key);
-        if (!existing) {
-          edgeMap.set(key, {
-            ...e,
-            voiceActors: [...(e.voiceActors ?? [])],
-          });
-          continue;
+      try {
+        const data = await this.request<{
+          Media: { characters: { pageInfo: { hasNextPage: boolean }; edges: AnilistCharacterEdge[] } };
+        }>(CHARACTERS_PAGE_QUERY, { id: mediaId, type, page, perPage });
+        const conn = data?.Media?.characters;
+        if (!conn?.edges) {
+          this.onLog?.(`  ! page ${page} returned no edges, stopping`);
+          break;
         }
-        existing.voiceActors = mergeVoiceActors(existing.voiceActors ?? [], e.voiceActors ?? []);
+
+        consecutiveFailures = 0; // reset on success
+
+        for (const e of conn.edges) {
+          if (!e?.node?.id) continue;
+          const key = `${e.node.id}:${e.role ?? ""}`;
+          const existing = edgeMap.get(key);
+          if (!existing) {
+            edgeMap.set(key, {
+              ...e,
+              voiceActors: [...(e.voiceActors ?? [])],
+            });
+            continue;
+          }
+          existing.voiceActors = mergeVoiceActors(existing.voiceActors ?? [], e.voiceActors ?? []);
+        }
+
+        if (!conn.pageInfo?.hasNextPage) break;
+        page += 1;
+        if (page > 50) {
+          this.onLog?.(`  ! hit page cap (50) for media ${mediaId}, stopping`);
+          break;
+        }
+      } catch (err) {
+        const e = err as Error & { status?: number };
+        consecutiveFailures += 1;
+        this.onLog?.(`  ! page ${page} failed (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${e?.message ?? String(err)}`);
+
+        // If we hit a 400 complexity error with perPage=50, retry this page with perPage=25
+        if (e?.status === 400 && /(cost|complexity|too ?complex)/i.test(e?.message ?? "") && perPage >= 25) {
+          this.onLog?.(`  ! complexity error on page ${page}, retrying with perPage=${Math.floor(perPage / 2)}`);
+          try {
+            const reducedData = await this.request<{
+              Media: { characters: { pageInfo: { hasNextPage: boolean }; edges: AnilistCharacterEdge[] } };
+            }>(CHARACTERS_PAGE_QUERY, { id: mediaId, type, page, perPage: Math.floor(perPage / 2) });
+            const reducedConn = reducedData?.Media?.characters;
+            if (reducedConn?.edges) {
+              consecutiveFailures = 0;
+              for (const e of reducedConn.edges) {
+                if (!e?.node?.id) continue;
+                const key = `${e.node.id}:${e.role ?? ""}`;
+                const existing = edgeMap.get(key);
+                if (!existing) {
+                  edgeMap.set(key, {
+                    ...e,
+                    voiceActors: [...(e.voiceActors ?? [])],
+                  });
+                  continue;
+                }
+                existing.voiceActors = mergeVoiceActors(existing.voiceActors ?? [], e.voiceActors ?? []);
+              }
+              if (!reducedConn.pageInfo?.hasNextPage) break;
+              page += 1;
+              if (page > 50) break;
+              continue; // skip the failure check below
+            }
+          } catch (retryErr) {
+            this.onLog?.(`  ! reduced-perPage retry also failed for page ${page}: ${(retryErr as Error)?.message ?? String(retryErr)}`);
+          }
+        }
+
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+          this.onLog?.(`  ! too many consecutive failures (${MAX_CONSECUTIVE_FAILURES}), aborting character fetch for media ${mediaId}`);
+          break;
+        }
+
+        // On failure, move to the next page (skip the failed page)
+        page += 1;
+        if (page > 50) break;
       }
-      if (!conn.pageInfo?.hasNextPage) break;
-      page += 1;
-      if (page > 50) break;
     }
 
     const allEdges = [...edgeMap.values()];
 
     // Filter to Japanese VAs per character; fall back to all VAs if none tagged Japanese.
-    // AniList may not tag every VA with a language; untagged VAs are kept as fallback
-    // so we never silently drop valid voice actor data.
     for (const edge of allEdges) {
       if (edge.voiceActors && edge.voiceActors.length > 0) {
         const japanese = edge.voiceActors.filter(va => va?.language === "Japanese");

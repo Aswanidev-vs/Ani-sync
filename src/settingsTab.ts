@@ -1,6 +1,8 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
-import AnisyncPlugin, { ClearCacheConfirmModal } from "./main";
+import AnisyncPlugin, { ClearCacheConfirmModal, SyncLogEntry } from "./main";
 import { fetchModels } from "./openrouter/client";
+
+type LogLevel = "info" | "success" | "warn" | "error";
 
 export class AnisyncSettingTab extends PluginSettingTab {
   private plugin: AnisyncPlugin;
@@ -440,6 +442,103 @@ export class AnisyncSettingTab extends PluginSettingTab {
             new ClearCacheConfirmModal(this.app, this.plugin).open();
           }),
       );
+
+    // Sync log viewer
+    const logSection = section.createDiv({ cls: "anisync-log-section" });
+    logSection.createEl("h4", { text: "Sync Log" });
+    logSection.createEl("p", {
+      text: "Recent sync activity and debug information.",
+      cls: "setting-item-description",
+    });
+
+    const logContainer = logSection.createDiv({ cls: "anisync-log-container" });
+
+    // Log level detection
+    const detectLevel = (entry: SyncLogEntry): LogLevel => {
+      const msg = entry.message.toLowerCase();
+      if (msg.startsWith("!") || msg.includes("error") || msg.includes("failed") || msg.includes("! write failed") || msg.includes("! delete failed") || msg.includes("! cleanup failed")) return "error";
+      if (msg.includes("warning") || msg.includes("warn") || msg.includes("retry")) return "warn";
+      if (msg.includes("done") || msg.includes("complete") || msg.includes("success") || msg.includes("applied")) return "success";
+      return "info";
+    };
+
+    // Toolbar with filters + action buttons
+    const toolbar = logContainer.createDiv({ cls: "anisync-log-toolbar" });
+
+    // Filter buttons
+    const filterWrap = toolbar.createDiv({ cls: "anisync-log-filter" });
+    let activeFilter: LogLevel | "all" = "all";
+    const filterBtns: Map<LogLevel | "all", HTMLButtonElement> = new Map();
+
+    const addFilterBtn = (label: string, value: LogLevel | "all") => {
+      const btn = filterWrap.createEl("button", { cls: "anisync-log-filter-btn", text: label });
+      if (value === activeFilter) btn.addClass("is-active");
+      filterBtns.set(value, btn);
+      btn.onclick = () => {
+        activeFilter = value;
+        for (const [v, b] of filterBtns) b.toggleClass("is-active", v === value);
+        renderLogEntries();
+      };
+    };
+
+    addFilterBtn("All", "all");
+    addFilterBtn("Info", "info");
+    addFilterBtn("Success", "success");
+    addFilterBtn("Warn", "warn");
+    addFilterBtn("Error", "error");
+
+    // Action buttons
+    const refreshBtn = toolbar.createEl("button", { cls: "anisync-log-btn", text: "Refresh" });
+    refreshBtn.onclick = () => { renderLogEntries(); new Notice("Log refreshed.", 1500); };
+
+    const clearBtn = toolbar.createEl("button", { cls: "anisync-log-btn", text: "Clear" });
+    clearBtn.onclick = () => { this.plugin.clearLog(); renderLogEntries(); new Notice("Log cleared.", 1500); };
+
+    const copyBtn = toolbar.createEl("button", { cls: "anisync-log-btn", text: "Copy" });
+    copyBtn.onclick = () => {
+      const entries = this.plugin.getSyncLog();
+      if (entries.length === 0) { new Notice("No logs to copy.", 3000); return; }
+      const text = entries.map((e) => `[${new Date(e.timestamp).toLocaleTimeString()}] [${detectLevel(e)}] ${e.message}`).join("\n");
+      navigator.clipboard.writeText(text).then(
+        () => new Notice("Logs copied to clipboard.", 3000),
+        () => new Notice("Failed to copy logs.", 3000),
+      );
+    };
+
+    // Log body
+    const logBody = logContainer.createDiv({ cls: "anisync-log-body" });
+
+    const renderLogEntries = () => {
+      logBody.empty();
+      const entries = this.plugin.getSyncLog();
+      const filtered = activeFilter === "all" ? entries : entries.filter((e) => detectLevel(e) === activeFilter);
+
+      if (filtered.length === 0) {
+        const empty = logBody.createDiv({ cls: "anisync-log-empty" });
+        empty.createDiv({ cls: "anisync-log-empty-icon", text: "\u{1F4DC}" });
+        empty.createDiv({ cls: "anisync-log-empty-title", text: "No log entries" });
+        empty.createDiv({ cls: "anisync-log-empty-desc", text: activeFilter === "all" ? "Run a sync to see activity here." : `No ${activeFilter} entries.` });
+        return;
+      }
+
+      for (const entry of filtered) {
+        const level = detectLevel(entry);
+        const row = logBody.createDiv({ cls: `anisync-log-entry is-${level}` });
+        row.createSpan({ cls: "anisync-log-time", text: new Date(entry.timestamp).toLocaleTimeString() });
+        row.createSpan({ cls: `anisync-log-level anisync-log-level-${level}`, text: level });
+        row.createSpan({ cls: "anisync-log-msg", text: entry.message });
+      }
+
+      logBody.scrollTop = logBody.scrollHeight;
+    };
+
+    // Initial render
+    renderLogEntries();
+
+    // Listen for log changes
+    this.plugin.onLogChange(() => {
+      renderLogEntries();
+    });
   }
 
   private getTimeAgo(date: Date): string {

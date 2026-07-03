@@ -154,7 +154,7 @@ export const CHARACTERS_PAGE_QUERY = `
         pageInfo { hasNextPage }
         edges {
           role
-          voiceActors {
+          voiceActors(language: JAPANESE) {
             id
             name { full native }
             language

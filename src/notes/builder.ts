@@ -155,31 +155,6 @@ export function buildAll(
     }
   }
 
-  // Suppress duplicate characters from sequel entries (e.g. BLEACH split into cours).
-  // If a character appears in both a prequel and its sequel, only keep it in the prequel.
-  const charToMedia = new Map<number, Set<number>>();
-  for (const m of mediaNotes) {
-    for (const c of m.characters) {
-      if (!charToMedia.has(c.id)) charToMedia.set(c.id, new Set());
-      charToMedia.get(c.id)!.add(m.mediaId);
-    }
-  }
-  for (const m of mediaNotes) {
-    const detail = details.get(`${m.type}:${m.mediaId}`);
-    if (!detail?.relations?.edges) continue;
-    const sequelIds = new Set<number>();
-    for (const edge of detail.relations.edges) {
-      if (!edge?.node) continue;
-      if (edge.relationType === "SEQUEL") sequelIds.add(edge.node.id);
-    }
-    if (sequelIds.size === 0) continue;
-    const currentCharIds = new Set(m.characters.map(c => c.id));
-    for (const sm of mediaNotes) {
-      if (!sequelIds.has(sm.mediaId)) continue;
-      sm.characters = sm.characters.filter(c => !currentCharIds.has(c.id));
-    }
-  }
-
   return {
     profile: { viewer, animeCount: countEntries(animeLists), mangaCount: countEntries(mangaLists), animeLists, mangaLists },
     media: mediaNotes,

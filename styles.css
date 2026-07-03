@@ -573,6 +573,212 @@
   background: var(--background-modifier-hover);
 }
 
+/* Sync Log Viewer */
+.anisync-log-section {
+  margin-top: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.anisync-log-section h4 {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.anisync-log-section .setting-item-description {
+  margin-bottom: 10px;
+}
+
+.anisync-log-container {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--background-primary);
+}
+
+.anisync-log-toolbar {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.anisync-log-filter {
+  display: flex;
+  gap: 4px;
+  margin-right: auto;
+}
+
+.anisync-log-filter-btn {
+  padding: 3px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.anisync-log-filter-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.anisync-log-filter-btn.is-active {
+  background: var(--color-accent);
+  color: var(--text-on-accent);
+  border-color: var(--color-accent);
+}
+
+.anisync-log-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.anisync-log-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+  border-color: var(--background-modifier-border);
+}
+
+.anisync-log-body {
+  max-height: 280px;
+  overflow-y: auto;
+  font-family: var(--font-monospace);
+  font-size: 12px;
+  line-height: 1.65;
+  scroll-behavior: smooth;
+}
+
+.anisync-log-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.anisync-log-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.anisync-log-body::-webkit-scrollbar-thumb {
+  background: var(--background-modifier-border);
+  border-radius: 3px;
+}
+
+.anisync-log-entry {
+  display: flex;
+  gap: 8px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  transition: background 0.1s ease;
+  align-items: baseline;
+}
+
+.anisync-log-entry:last-child {
+  border-bottom: none;
+}
+
+.anisync-log-entry:hover {
+  background: var(--background-modifier-hover);
+}
+
+.anisync-log-time {
+  color: var(--text-faint);
+  font-size: 11px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 64px;
+}
+
+.anisync-log-level {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 4px;
+  min-width: 36px;
+  text-align: center;
+}
+
+.anisync-log-level-info {
+  color: var(--text-muted);
+  background: var(--background-modifier-hover);
+}
+
+.anisync-log-level-success {
+  color: var(--color-green);
+  background: color-mix(in srgb, var(--color-green) 14%, transparent);
+}
+
+.anisync-log-level-warn {
+  color: var(--color-orange);
+  background: color-mix(in srgb, var(--color-orange) 14%, transparent);
+}
+
+.anisync-log-level-error {
+  color: var(--color-red);
+  background: color-mix(in srgb, var(--color-red) 14%, transparent);
+}
+
+.anisync-log-msg {
+  color: var(--text-normal);
+  word-break: break-word;
+}
+
+.anisync-log-entry.is-error .anisync-log-msg {
+  color: var(--color-red);
+}
+
+.anisync-log-entry.is-warn .anisync-log-msg {
+  color: var(--color-orange);
+}
+
+.anisync-log-entry.is-success .anisync-log-msg {
+  color: var(--color-green);
+}
+
+.anisync-log-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+  color: var(--text-muted);
+  text-align: center;
+  gap: 6px;
+}
+
+.anisync-log-empty-icon {
+  font-size: 24px;
+  opacity: 0.4;
+  margin-bottom: 4px;
+}
+
+.anisync-log-empty-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-normal);
+}
+
+.anisync-log-empty-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 /* Blinking cursor for typewriter effect */
 .anisync-cursor {
   display: inline;

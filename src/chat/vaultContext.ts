@@ -321,15 +321,16 @@ export class VaultContext {
     this.loadingPromise = null;
   }
 
-  async load(): Promise<void> {
+  async load(onProgress?: (msg: string) => void): Promise<void> {
     if (this.loaded) return;
     if (this.loadingPromise) return this.loadingPromise;
 
     this.loadingPromise = (async () => {
       const folder = this.app.vault.getAbstractFileByPath(this.basePath);
-      if (!folder) return;
+      if (!folder) { onProgress?.("Folder not found"); return; }
 
       const files = this.getAllMarkdownFiles(folder);
+      onProgress?.(`Found ${files.length} files`);
       // Parallel file reads (batch of 20)
       const BATCH = 20;
       for (let i = 0; i < files.length; i += BATCH) {
@@ -338,10 +339,13 @@ export class VaultContext {
         for (const node of nodes) {
           if (node) this.nodes.push(node);
         }
+        onProgress?.(`Read ${Math.min(i + BATCH, files.length)}/${files.length} files (${this.nodes.length} indexed)`);
       }
+      onProgress?.("Building search index...");
       this.loaded = true;
       this.index = new SearchIndex();
       this.index.build(this.nodes);
+      onProgress?.("Index ready — " + this.nodes.length + " entries indexed");
     })();
 
     return this.loadingPromise;

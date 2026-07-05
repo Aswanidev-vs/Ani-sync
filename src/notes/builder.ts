@@ -603,7 +603,7 @@ export function buildMediaArtifact(note: MediaNote, titleSlug: string, syncedAt:
       const vaLinks = c.voiceActors.length
         ? ` (voiced by ${c.voiceActors.map(va => va.name).join(", ")})`
         : "";
-      body.push(`- [[Characters/${titleSlug}#${slugifyAnchor(c.name)}|${c.name}]] — ${c.role ?? ""}${vaLinks}`);
+      body.push(`- [[Characters/${titleSlug}#${c.name}|${c.name}]] — ${c.role ?? ""}${vaLinks}`);
     }
     body.push("");
   }

@@ -71,7 +71,20 @@ export class ChatView extends ItemView {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); this.handleSend(); }
     };
 
-    this.showWelcome("Loading your library...");
+    // Load chat history
+    const messages = this.plugin.getActiveChatMessages();
+    if (messages.length > 0) {
+      for (const msg of messages) {
+        if (msg.role === "user") {
+          this.addUserMessage(msg.content, false);
+        } else {
+          this.addAssistantMessage(msg.content, false);
+        }
+      }
+      this.scrollDown();
+    } else {
+      this.showWelcome("Loading your library...");
+    }
     this.preloadVaultContext();
   }
 
@@ -96,6 +109,7 @@ export class ChatView extends ItemView {
   private clearChat(): void {
     this.currentStream = null;
     this.messagesEl.empty();
+    this.plugin.startNewChat();
     this.showWelcome();
   }
 
@@ -257,7 +271,11 @@ export class ChatView extends ItemView {
     const s = this.currentStream;
     if (!s || s.resolved || !s.isComplete) return;
     s.resolved = true;
-    void this.renderMarkdown(s.bubbleEl, s.fullContent.trim() ? s.fullContent : "No response received from the model.", false).finally(() => { s.resolve(); });
+    const content = s.fullContent.trim() ? s.fullContent : "No response received from the model.";
+    void this.renderMarkdown(s.bubbleEl, content, false).finally(() => {
+      this.plugin.saveChatMessage("assistant", content);
+      s.resolve();
+    });
   }
 
   private async renderMarkdown(el: HTMLDivElement, content: string, showCursor = false): Promise<void> {
@@ -269,21 +287,23 @@ export class ChatView extends ItemView {
     this.scrollDown();
   }
 
-  private addUserMessage(text: string): void {
+  private addUserMessage(text: string, save = true): void {
     this.removeWelcome();
     const msg = this.messagesEl.createDiv({ cls: "anisync-chat-message anisync-chat-message-user" });
     const bubble = msg.createDiv({ cls: "anisync-chat-bubble" });
     bubble.setText(text);
     this.scrollDown();
+    if (save) this.plugin.saveChatMessage("user", text);
   }
 
-  private addAssistantMessage(text: string): void {
+  private addAssistantMessage(text: string, save = true): void {
     this.removeWelcome();
     const msg = this.messagesEl.createDiv({ cls: "anisync-chat-message anisync-chat-message-assistant" });
     const icon = msg.createSpan({ cls: "anisync-chat-avatar" });
     icon.textContent = "AI";
     const bubble = msg.createDiv({ cls: "anisync-chat-bubble" });
     this.renderMarkdown(bubble, text, false);
+    if (save) this.plugin.saveChatMessage("assistant", text);
   }
 
   private createAssistantBubble(): HTMLDivElement {

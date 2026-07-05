@@ -41,26 +41,21 @@ export class ChatView extends ItemView {
     container.empty();
     container.addClass("anisync-chat-container");
 
+    // Messages area
     this.messagesEl = container.createDiv({ cls: "anisync-chat-messages" });
-    this.inputEl = container.createEl("textarea", { cls: "anisync-chat-input" });
-    this.inputEl.placeholder = "Ask about your AniList library...";
-    this.inputEl.rows = 2;
 
-    const inputRow = container.createDiv({ cls: "anisync-chat-input-row" });
-    this.newChatBtn = inputRow.createEl("button", { cls: "anisync-chat-new-btn", title: "New Chat" });
+    // Input area: [new chat btn] [textarea] [send btn]
+    const inputArea = container.createDiv({ cls: "anisync-chat-input-area" });
+    this.newChatBtn = inputArea.createEl("button", { cls: "anisync-chat-new-btn", title: "New chat" });
     this.newChatBtn.textContent = "+";
     this.newChatBtn.onclick = () => this.clearChat();
 
-    this.inputEl.parentElement?.insertBefore(inputRow, this.sendBtn);
-    // Actually put the new chat btn inside the input row alongside send
-    const inputArea = this.inputEl.closest(".anisync-chat-input-area") || this.inputEl.parentElement!;
-    inputRow.style.cssText = "display: flex; gap: 6px; align-items: center;";
+    this.inputEl = inputArea.createEl("textarea", {
+      cls: "anisync-chat-input",
+      attr: { placeholder: "Ask about your AniList library...", rows: "2" },
+    });
 
-    const wrapperDiv = inputArea;
-    wrapperDiv.innerHTML = "";
-    wrapperDiv.appendChild(this.newChatBtn);
-    wrapperDiv.appendChild(this.inputEl);
-    this.sendBtn = wrapperDiv.createEl("button", { cls: "anisync-chat-send-btn", text: "Send" });
+    this.sendBtn = inputArea.createEl("button", { cls: "anisync-chat-send-btn", text: "Send" });
 
     this.loadingEl = container.createDiv({ cls: "anisync-chat-loading" });
     this.loadingEl.hide();

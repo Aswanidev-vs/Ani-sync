@@ -380,12 +380,10 @@ export class AnilistClient {
 
         if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
           this.onLog?.(`  ! too many consecutive failures (${MAX_CONSECUTIVE_FAILURES}), aborting character fetch for media ${mediaId}`);
-          break;
+          throw err;
         }
 
-        // On failure, move to the next page (skip the failed page)
-        page += 1;
-        if (page > 50) break;
+        throw err;
       }
     }
 

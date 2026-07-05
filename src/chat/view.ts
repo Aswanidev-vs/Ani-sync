@@ -41,21 +41,27 @@ export class ChatView extends ItemView {
     container.empty();
     container.addClass("anisync-chat-container");
 
+    // Header bar with title + new chat button
+    const header = container.createDiv({ cls: "anisync-chat-header" });
+    const title = header.createSpan({ cls: "anisync-chat-header-title" });
+    title.textContent = "Ani-sync Chat";
+    this.newChatBtn = header.createEl("button", { cls: "anisync-chat-new-btn", title: "New chat" });
+    this.newChatBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>`;
+    this.newChatBtn.onclick = () => this.clearChat();
+
     // Messages area
     this.messagesEl = container.createDiv({ cls: "anisync-chat-messages" });
 
-    // Input area: [new chat btn] [textarea] [send btn]
+    // Input area
     const inputArea = container.createDiv({ cls: "anisync-chat-input-area" });
-    this.newChatBtn = inputArea.createEl("button", { cls: "anisync-chat-new-btn", title: "New chat" });
-    this.newChatBtn.textContent = "+";
-    this.newChatBtn.onclick = () => this.clearChat();
 
     this.inputEl = inputArea.createEl("textarea", {
       cls: "anisync-chat-input",
       attr: { placeholder: "Ask about your AniList library...", rows: "2" },
     });
 
-    this.sendBtn = inputArea.createEl("button", { cls: "anisync-chat-send-btn", text: "Send" });
+    this.sendBtn = inputArea.createEl("button", { cls: "anisync-chat-send-btn" });
+    this.sendBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>`;
 
     this.loadingEl = container.createDiv({ cls: "anisync-chat-loading" });
     this.loadingEl.hide();

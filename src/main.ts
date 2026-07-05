@@ -273,7 +273,7 @@ export default class AnisyncPlugin extends Plugin {
   }
 
   private generateSessionId(): string {
-    return `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    return `chat_${Date.now()}_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
   }
 
   private getChatTitle(firstMessage: string): string {

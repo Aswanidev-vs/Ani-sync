@@ -18,6 +18,8 @@ An Obsidian plugin that syncs your [AniList](https://anilist.co/) anime & manga 
 - **Live Typewriter Animation** — Responses stream character-by-character with a blinking cursor, just like ChatGPT.
 - **Multi-layer Search Engine** — 6 indexing layers (HeadingIndex, BM25, Trigram, FTS, LinkGraph, MetadataIndex) for fast, accurate results.
 - **Smart Character/VA Search** — HeadingIndex provides O(1) lookups for `## CharacterName` across all files.
+- **Chat History Persistence** — Chat sessions saved as JSON in `data.json`, restored on reopen.
+- **New Chat Button** — Fresh start with the `+` button in the chat header.
 - **Searchable Model Selector** — Type to filter OpenRouter models in Settings.
 - **Graph Colors** — Customize node colors for each note type in Obsidian's Graph View via `.obsidian/graph.json`.
 - **Characters & Voice Actors** — Characters synced per-anime with inlined VA data (photo, name, language) and wikilink tags.
@@ -28,11 +30,12 @@ An Obsidian plugin that syncs your [AniList](https://anilist.co/) anime & manga 
 |-----------|--------|---------------|
 | Anime | `Ani-sync/Anime/` | One per anime on the list |
 | Manga | `Ani-sync/Manga/` | One per manga on the list |
-| Characters | `Ani-sync/Characters/` | One per character, with voice actor data inlined |
+| Characters | `Ani-sync/Characters/` | One per anime series, with voice actor data inlined |
 | Studios | `Ani-sync/Studios/` | Referenced by Anime notes |
 | Staff | `Ani-sync/Staff/` | Referenced by Anime notes (with images) |
 | Tags / Genres | `Ani-sync/Tags/` | Referenced by Anime & Manga notes |
 | Profile | `Ani-sync/Profile.md` | One summary note |
+| Voice Actors | `Ani-sync/Voice-Actors.md` | Map of all voice actors to their characters |
 
 Every Anime/Manga note links out to studios, staff, characters, tags, and relations with `[[Wiki Links]]`, so they all show up as connected nodes in Obsidian's graph view.
 
@@ -132,6 +135,10 @@ The heading index extracts all `##` headings from every file during build, provi
 
 The search index is built in-memory on chat open (~200ms for 2000+ entries). Full `.md` body content is included in the prompt context.
 
+### Chat History
+
+Chat sessions are automatically saved as JSON in `data.json`. Previous conversations persist across Obsidian restarts. Use the **+** button in the chat header to start a fresh session.
+
 ### Response Pipeline
 
 ```
@@ -162,6 +169,8 @@ User query → Quick response? → Static reply (greetings/bye/help)
 - "List all anime by studio Ufotable"
 - "What's the staff for Attack on Titan?"
 - "Who voices Naruto?"
+- "Tell me about I Want to End This Love Game"
+- "Who is Miku from the voice actors file?"
 
 ## Graph Colors
 
@@ -176,7 +185,7 @@ Customize the color of each note type in Obsidian's Graph View via **Settings �
 | Tags | `#f87171` (red) |
 | Characters | `#fbbf24` (yellow) |
 
-Colors are injected as CSS targeting `.graph-view .graph-node[data-path*="..."]` and as CSS custom properties `--graph-color-N` for Obsidian's native color system.
+Colors are applied via Obsidian's `.obsidian/graph.json` color groups, targeting files by path prefix.
 
 ## Architecture
 
@@ -184,7 +193,7 @@ Colors are injected as CSS targeting `.graph-view .graph-node[data-path*="..."]`
 AniList API
   → SyncEngine (diff + fetch + hash + write, 700ms rate limit, 8 concurrent writes)
     → Vault (.md files with frontmatter + wikilinks + SHA-256 markers)
-    → data.json (summary map, detail cache, note hashes, file paths)
+    → data.json (summary map, detail cache, note hashes, file paths, chat history)
       → ChatView onOpen() → preloadVaultContext()
         → VaultContext.load() → SearchIndex.build() (trigrams + BM25)
           → handleSend() → buildContextForQuery()
@@ -205,6 +214,7 @@ AniList API
 - The hosted callback page is static; the Client ID is hardcoded.
 - The plugin's settings tab verifies `event.origin === 'https://agniveshtm.github.io'` before trusting the OAuth `postMessage`.
 - Your OpenRouter API key is stored in `data.json` and sent only to OpenRouter's API endpoint.
+- Session IDs use `crypto.randomUUID()` (cryptographically secure) instead of `Math.random()`.
 
 ## Project layout
 
@@ -213,7 +223,7 @@ AniList API
 ├── manifest.json                Obsidian plugin manifest
 ├── main.js                      Built/bundled output
 ├── styles.css                   Custom styles (chat, settings, progress, cursor)
-├── assets/logo.svg              Plugin logo
+├── assets/logo.png              Plugin logo
 ├── package.json                 devDeps: obsidian, esbuild, typescript, …
 ├── esbuild.config.mjs           bundles src/main.ts → main.js
 ├── tsconfig.json                strict TS
@@ -236,7 +246,7 @@ AniList API
 │   │   ├── hash.ts              SHA-256 via crypto.subtle + marker extract/strip
 │   │   └── cache.ts             Cache schema + diff algorithm
 │   ├── chat/
-│   │   ├── view.ts              Chat UI (typewriter, markdown, quick responses, error handling)
+│   │   ├── view.ts              Chat UI (typewriter, markdown, quick responses, error handling, chat history)
 │   │   ├── vaultContext.ts      6-layer search engine (HeadingIndex, BM25, Trigram, LinkGraph, MetadataIndex)
 │   │   └── logo.ts              Logo data URL for welcome screen
 │   └── openrouter/

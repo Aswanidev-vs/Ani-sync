@@ -124,7 +124,7 @@ export class AnilistClient {
         const ra = Number(response.headers["retry-after"] ?? "60");
         const err = new Error("rate-limited") as Error & { status: number; retryAfter: number };
         err.status = 429;
-        err.retryAfter = Number.isFinite(ra) ? ra : 60;
+        err.retryAfter = Number.isFinite(ra) && ra > 0 ? ra : 60;
         this.onLog?.(`  !! 429 rate-limited, Retry-After: ${err.retryAfter}s`);
         throw err;
       }

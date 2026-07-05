@@ -1,4 +1,4 @@
-import { slugify, pickTitle } from "./slugify";
+import { slugify, slugifyAnchor, pickTitle } from "./slugify";
 import type {
   AnilistCharacterEdge,
   AnilistRelationEdge,
@@ -60,6 +60,8 @@ export interface MediaNote {
   genres: string[];
   tags: { id: number; name: string; rank?: number | null }[];
   relations: { id: number; type: "ANIME" | "MANGA"; title: string; relationType: string }[];
+  hasAnimeRelation: boolean;
+  hasMangaRelation: boolean;
   characters: { id: number; name: string; role?: string | null;
     voiceActors: { id: number; name: string }[] }[];
 }
@@ -152,31 +154,6 @@ export function buildAll(
       if (!detail) continue;
       mediaNotes.push(buildMediaNote(entry, detail, list.name));
       collectFromDetail(detail, studios, staff, tags, characters, voiceActors, relations);
-    }
-  }
-
-  // Suppress duplicate characters from sequel entries (e.g. BLEACH split into cours).
-  // If a character appears in both a prequel and its sequel, only keep it in the prequel.
-  const charToMedia = new Map<number, Set<number>>();
-  for (const m of mediaNotes) {
-    for (const c of m.characters) {
-      if (!charToMedia.has(c.id)) charToMedia.set(c.id, new Set());
-      charToMedia.get(c.id)!.add(m.mediaId);
-    }
-  }
-  for (const m of mediaNotes) {
-    const detail = details.get(`${m.type}:${m.mediaId}`);
-    if (!detail?.relations?.edges) continue;
-    const sequelIds = new Set<number>();
-    for (const edge of detail.relations.edges) {
-      if (!edge?.node) continue;
-      if (edge.relationType === "SEQUEL") sequelIds.add(edge.node.id);
-    }
-    if (sequelIds.size === 0) continue;
-    const currentCharIds = new Set(m.characters.map(c => c.id));
-    for (const sm of mediaNotes) {
-      if (!sequelIds.has(sm.mediaId)) continue;
-      sm.characters = sm.characters.filter(c => !currentCharIds.has(c.id));
     }
   }
 
@@ -368,6 +345,12 @@ function buildMediaNote(entry: MediaListEntry, detail: MediaDetail, listName: st
         title: pickTitle(e.node.title),
         relationType: e.relationType,
       })),
+    hasAnimeRelation: (detail.relations?.edges ?? []).some(
+      (e) => e?.node?.type === "ANIME" && ["SEQUEL", "PREQUEL", "SOURCE", "SIDE_STORY", "SPIN_OFF", "ALTERNATIVE", "ADAPTATION", "PARENT", "SUMMARY", "FULL", "UNOFFICIAL", "OTHER"].includes(e.relationType)
+    ),
+    hasMangaRelation: (detail.relations?.edges ?? []).some(
+      (e) => e?.node?.type === "MANGA" && ["SEQUEL", "PREQUEL", "SOURCE", "SIDE_STORY", "SPIN_OFF", "ALTERNATIVE", "ADAPTATION", "PARENT", "SUMMARY", "FULL", "UNOFFICIAL", "OTHER"].includes(e.relationType)
+    ),
     characters: (detail.characters?.edges ?? [])
       .filter((e): e is AnilistCharacterEdge => !!e?.node)
       .map((e) => ({
@@ -473,11 +456,29 @@ export function buildArtifacts(built: BuiltArtifacts, syncedAt: string): NoteArt
     }
   }
 
+  // Track character filenames for deduplication
+  const charFileTracker = new Map<string, number>();
+
   for (const [slug, mediaList] of mediaBySlug) {
-    if (mediaList.length === 1) {
-      artifacts.push(buildMediaCharacterArtifact(mediaList[0], built.characters, charMediaLookup, syncedAt));
+    // Determine filename with deduplication
+    const count = charFileTracker.get(slug) ?? 0;
+    charFileTracker.set(slug, count + 1);
+
+    let filename: string;
+    if (count === 0) {
+      // First occurrence uses base slug
+      filename = `${slug}.md`;
     } else {
-      artifacts.push(buildMergedCharacterArtifact(mediaList, built.characters, charMediaLookup, syncedAt));
+      // Subsequent occurrences get type suffix to disambiguate
+      const types = [...new Set(mediaList.map(m => m.type))];
+      const typeSuffix = types.length === 1 ? `-${types[0]}` : '';
+      filename = `${slug}${typeSuffix}.md`;
+    }
+
+    if (mediaList.length === 1) {
+      artifacts.push(buildMediaCharacterArtifact(mediaList[0], built.characters, charMediaLookup, syncedAt, filename));
+    } else {
+      artifacts.push(buildMergedCharacterArtifact(mediaList, built.characters, charMediaLookup, syncedAt, filename));
     }
   }
 
@@ -722,6 +723,7 @@ export function buildMediaCharacterArtifact(
   characters: Map<number, CharacterArtifactData>,
   charMediaLookup: Map<number, { mediaId: number; title: string; type: string }[]>,
   syncedAt: string,
+  filename?: string,
 ): NoteArtifact {
   const title = pickTitle(mediaNote.title);
   const titleSlug = slugify(title);
@@ -760,7 +762,7 @@ export function buildMediaCharacterArtifact(
     if (ch.age) body.push(`**Age:** ${ch.age}  `);
     if (ch.dateOfBirth) body.push(`**Birthday:** ${ch.dateOfBirth}  `);
     body.push(`**Role:** ${c.role ?? ""}  `);
-    body.push(`**Type:** ${mediaNote.type === 'ANIME' ? 'Anime' : 'Manga'}  `);
+    body.push(`**Type:** ${determineCharType(mediaNote.type, mediaNote.format, mediaNote.hasAnimeRelation, mediaNote.hasMangaRelation)}  `);
     body.push(`[AniList](${ch.siteUrl ?? ""})  `);
     body.push("");
 
@@ -801,7 +803,7 @@ export function buildMediaCharacterArtifact(
 
   return {
     folder: "Characters",
-    filename: `${titleSlug}.md`,
+    filename: filename ?? `${titleSlug}.md`,
     body: renderFrontmatter(fm) + "\n" + body.join("\n"),
     uniqueKey: `media-characters:${mediaNote.mediaId}`,
   };
@@ -812,15 +814,28 @@ export function buildMergedCharacterArtifact(
   characters: Map<number, CharacterArtifactData>,
   charMediaLookup: Map<number, { mediaId: number; title: string; type: string }[]>,
   syncedAt: string,
+  filename?: string,
 ): NoteArtifact {
   const primaryNote = mediaNotes[0];
   const title = pickTitle(primaryNote.title);
   const titleSlug = slugify(title);
 
   const types = new Set(mediaNotes.map(m => m.type));
-  const mediaTypeStr = types.size > 1
-    ? [...types].sort().join("/")
-    : [...types][0];
+  const hasAnyAnimeRelation = mediaNotes.some(m => m.hasAnimeRelation);
+  const hasAnyMangaRelation = mediaNotes.some(m => m.hasMangaRelation);
+  const hasOnaFormat = mediaNotes.some(m => m.format === "ONA");
+
+  let mediaTypeStr: string;
+  if (hasOnaFormat) {
+    mediaTypeStr = "ONA";
+  } else if (types.size > 1) {
+    mediaTypeStr = [...types].sort().join("/");
+  } else {
+    const onlyType = [...types][0];
+    if (onlyType === "ANIME" && hasAnyMangaRelation) mediaTypeStr = "ANIME/MANGA";
+    else if (onlyType === "MANGA" && hasAnyAnimeRelation) mediaTypeStr = "ANIME/MANGA";
+    else mediaTypeStr = onlyType;
+  }
 
   const mediaIds = mediaNotes.map(m => m.mediaId).sort();
 
@@ -861,8 +876,15 @@ export function buildMergedCharacterArtifact(
     ANIME: "Anime",
     MANGA: "Manga",
   };
-  const formatType = (types: Set<"ANIME" | "MANGA">): string => {
-    return [...types].map(t => charTypeLabels[t]).join("/");
+  const charFormat = (types: Set<"ANIME" | "MANGA">): string => {
+    if (hasOnaFormat) return "ONA";
+    const labels = [...types].map(t => charTypeLabels[t]);
+    if (labels.length > 1) return labels.join("/");
+    const only = labels[0];
+    // If only one type but media has a cross-type relation, upgrade to dual type
+    if (only === "Anime" && hasAnyMangaRelation) return "Anime/Manga";
+    if (only === "Manga" && hasAnyAnimeRelation) return "Anime/Manga";
+    return only;
   };
 
   const body: string[] = [];
@@ -884,7 +906,7 @@ export function buildMergedCharacterArtifact(
     if (ch.age) body.push(`**Age:** ${ch.age}  `);
     if (ch.dateOfBirth) body.push(`**Birthday:** ${ch.dateOfBirth}  `);
     body.push(`**Role:** ${mc.roles.join(", ")}  `);
-    body.push(`**Type:** ${formatType(mc.types)}  `);
+    body.push(`**Type:** ${charFormat(mc.types)}  `);
     body.push(`[AniList](${ch.siteUrl ?? ""})  `);
     body.push("");
 
@@ -927,7 +949,7 @@ export function buildMergedCharacterArtifact(
 
   return {
     folder: "Characters",
-    filename: `${titleSlug}.md`,
+    filename: filename ?? `${titleSlug}.md`,
     body: renderFrontmatter(fm) + "\n" + body.join("\n"),
     uniqueKey: `media-characters:${titleSlug}`,
   };
@@ -1013,4 +1035,22 @@ export function buildProfileArtifact(profile: ProfileData, syncedAt: string): No
     body: renderFrontmatter(fm) + "\n" + body.join("\n"),
     uniqueKey: "profile",
   };
+}
+
+function determineCharType(
+  mediaType: "ANIME" | "MANGA",
+  format: string | null | undefined,
+  hasAnimeRelation: boolean,
+  hasMangaRelation: boolean,
+): string {
+  if (format === "ONA") return "ONA";
+
+  if (mediaType === "ANIME") {
+    if (hasMangaRelation) return "Anime/Manga";
+    return "Anime";
+  }
+
+  // MANGA
+  if (hasAnimeRelation) return "Anime/Manga";
+  return "Manga";
 }

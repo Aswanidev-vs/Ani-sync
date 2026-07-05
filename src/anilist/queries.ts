@@ -148,13 +148,13 @@ export const MEDIA_DETAILS_BATCH_QUERY = `
 `;
 
 export const CHARACTERS_PAGE_QUERY = `
-  query MediaCharacters($id: Int!, $type: MediaType!, $page: Int!) {
+  query MediaCharacters($id: Int!, $type: MediaType!, $page: Int!, $perPage: Int!) {
     Media(id: $id, type: $type) {
-      characters(page: $page, perPage: 50, sort: ROLE) {
+      characters(page: $page, perPage: $perPage, sort: ROLE) {
         pageInfo { hasNextPage }
         edges {
           role
-          voiceActors {
+          voiceActors(language: JAPANESE) {
             id
             name { full native }
             language

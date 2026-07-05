@@ -10,6 +10,15 @@ export function slugify(input: string): string {
     .slice(0, 120);
 }
 
+export function slugifyAnchor(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[.'"]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
 export function pickTitle(t: { userPreferred?: string | null; english?: string | null; romaji?: string | null } | null | undefined): string {
   return t?.userPreferred ?? t?.english ?? t?.romaji ?? "(untitled)";
 }

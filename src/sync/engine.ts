@@ -77,6 +77,7 @@ export class SyncEngine {
       this.anilist.fetchSummary(this.username),
     ]);
     onProgress(`Viewer: @${viewer.name} (id ${viewer.id})`, 5);
+    this.onLog?.(`Authenticated as @${viewer.name} (ID: ${viewer.id})`);
 
     const outputExists = await this.vault.exists(this.outputDir);
     if (!outputExists) {
@@ -96,9 +97,11 @@ export class SyncEngine {
       .filter(([key, detail]) => newSummary[key] != null && this.needsCharacterRefresh(detail))
       .map(([key]) => key);
     onProgress(`Summary: ${changed.length} changed, ${removed.length} removed, ${unchanged.length} unchanged`, 5);
+    this.onLog?.(`Summary diff: ${changed.length} changed, ${removed.length} removed, ${unchanged.length} unchanged`);
 
     if (changed.length === 0 && removed.length === 0 && staleCharacterDetails.length === 0) {
       onProgress("No changes detected. Cache-only update, skipping list fetches and writes.", 100);
+      this.onLog?.("No changes detected - sync complete (cache-only update)");
       const idleStats: SyncStats = { created: 0, updated: 0, deleted: 0, skipped: unchanged.length, failed: 0, planned: 0 };
       await this.updateCache(newSummary, cachedDetails);
       return idleStats;
@@ -106,6 +109,7 @@ export class SyncEngine {
 
     if (changed.length === 0 && removed.length > 0) {
       onProgress(`Only removals detected (${removed.length}). Skipping list fetches...`, 10);
+      this.onLog?.(`Processing ${removed.length} removal(s) only`);
       const removalStats: SyncStats = { created: 0, updated: 0, deleted: 0, skipped: 0, failed: 0, planned: 0 };
       await this.handleRemovals(removed, removalStats);
       if (this.cancelled) {
@@ -120,6 +124,7 @@ export class SyncEngine {
 
     const fetchKeys = [...new Set([...changed, ...staleCharacterDetails])];
     onProgress(`Fetching full lists for ${fetchKeys.length} changed/incomplete entry/entries...`, 7);
+    this.onLog?.(`Fetching full lists for ${fetchKeys.length} changed/incomplete entries`);
     const [fullAnimeLists, fullMangaLists] = await Promise.all([
       this.anilist.fetchFullList("ANIME", this.username),
       this.anilist.fetchFullList("MANGA", this.username),
@@ -128,6 +133,7 @@ export class SyncEngine {
     const mangaCount = countEntries(fullMangaLists);
     const totalEntries = animeCount + mangaCount;
     onProgress(`anime: ${animeCount} / manga: ${mangaCount} entries`, 10);
+    this.onLog?.(`Lists fetched: ${animeCount} anime, ${mangaCount} manga entries`);
 
     if (this.cancelled) return this.cancelledStats();
 
@@ -148,6 +154,7 @@ export class SyncEngine {
       }
     }
     onProgress(`Fetching ${toFetch.length} new/changed detail(s) in batch...`, 30);
+    this.onLog?.(`Reusing ${details.size} cached details, fetching ${toFetch.length} new/changed`);
 
     const byType: { ANIME: number[]; MANGA: number[] } = { ANIME: [], MANGA: [] };
     for (const m of toFetch) {
@@ -167,15 +174,38 @@ export class SyncEngine {
     for (const m of fetchedAnime) if (m) details.set(`ANIME:${m.id}`, this.mergeMediaDetail(cachedDetails.get(`ANIME:${m.id}`), m));
     for (const m of fetchedManga) if (m) details.set(`MANGA:${m.id}`, this.mergeMediaDetail(cachedDetails.get(`MANGA:${m.id}`), m));
 
-    const detailsNeedingCharacters = [...details.values()].filter((m) => this.needsCharacterRefresh(m) || !!m.characters?.pageInfo?.hasNextPage);
+    // Collect keys of freshly fetched media — always re-fetch their characters
+    // because the batch query can truncate character data due to complexity limits
+    const freshlyFetchedKeys = new Set<string>();
+    for (const m of fetchedAnime) if (m) freshlyFetchedKeys.add(`ANIME:${m.id}`);
+    for (const m of fetchedManga) if (m) freshlyFetchedKeys.add(`MANGA:${m.id}`);
+
+    const detailsNeedingCharacters = [...details.entries()].filter(([key, m]) => {
+      // Always re-fetch characters for freshly fetched media (batch query may have truncated them)
+      if (freshlyFetchedKeys.has(key)) return true;
+      // For cached entries, only re-fetch if the character list looks incomplete
+      return this.needsCharacterRefresh(m);
+    }).map(([, m]) => m);
+
     if (detailsNeedingCharacters.length > 0) {
+      this.onLog?.(`  character fetch needed for ${detailsNeedingCharacters.length} media entries (${freshlyFetchedKeys.size} freshly fetched, ${detailsNeedingCharacters.length - freshlyFetchedKeys.size} cache refresh)`);
+      for (const m of detailsNeedingCharacters) {
+        const existing = m.characters?.edges?.length ?? 0;
+        this.onLog?.(`    -> ${m.type}:${m.id} ("${m.title?.userPreferred ?? m.title?.romaji ?? "?"}") [${existing} existing chars]`);
+      }
       await pMapLimit(detailsNeedingCharacters, 4, async (m) => {
         if (this.cancelled) return;
-        const fetchedEdges = await this.anilist.fetchAllCharacters(m.id, m.type);
-        m.characters = this.mergeCharacterConnections(
-          { edges: m.characters?.edges ?? [], pageInfo: { hasNextPage: false } },
-          { edges: fetchedEdges, pageInfo: { hasNextPage: false } },
-        );
+        try {
+          const fetchedEdges = await this.anilist.fetchAllCharacters(m.id, m.type, 1);
+          this.onLog?.(`  ${m.type}:${m.id}: fetched ${fetchedEdges.length} characters total`);
+          m.characters = {
+            edges: fetchedEdges,
+            pageInfo: { hasNextPage: false },
+          };
+        } catch (err) {
+          this.onLog?.(`  ! character fetch failed for ${m.type}:${m.id}: ${(err as Error)?.message ?? String(err)}`);
+          m.characters = undefined;
+        }
       });
     }
 
@@ -187,6 +217,7 @@ export class SyncEngine {
       }
     }
     onProgress(`Detail fetch complete: ${details.size} total`, 50);
+    this.onLog?.(`Detail fetch complete: ${details.size} total details loaded`);
 
     if (this.cancelled) return this.cancelledStats();
 
@@ -195,10 +226,12 @@ export class SyncEngine {
     const totalFiles = artifacts.length;
     const totalFolders = new Set(artifacts.map(a => a.folder)).size;
     onProgress(`Artifacts planned: ${totalFiles} files, ${totalFolders} folders`, 55);
+    this.onLog?.(`Artifacts: ${totalFiles} files across ${totalFolders} folders`);
 
     onProgress("Pre-computing hashes...", 57);
     const prepared = await this.prepareArtifacts(artifacts);
     onProgress(`Hashes computed: ${prepared.length}`, 60);
+    this.onLog?.(`Hashes computed for ${prepared.length} artifacts`);
 
     if (this.cancelled) return this.cancelledStats();
 
@@ -206,9 +239,15 @@ export class SyncEngine {
       onProgress(`${filesDone}/${totalF} files (${foldersDone}/${totalFolders} folders)`, 60 + Math.round((filesDone / totalF) * 30));
     });
 
-    if (this.cancelled) return stats;
+    if (this.cancelled) {
+      this.onLog?.("Sync cancelled by user");
+      return stats;
+    }
+
+    this.onLog?.(`Write complete: ${stats.created} created, ${stats.updated} updated, ${stats.skipped} unchanged, ${stats.failed} failed`);
 
     onProgress(`Removing ${removed.length} obsolete note(s)...`, 92);
+    this.onLog?.(`Removing ${removed.length} obsolete note(s)`);
     await this.handleRemovals(removed, stats);
 
     onProgress("Cleaning up legacy Voice-Actor files...", 94);
@@ -219,7 +258,16 @@ export class SyncEngine {
 
     onProgress("Updating cache...", 95);
     await this.updateCache(newSummary, details);
+    this.onLog?.("Cache updated successfully");
 
+    this.onLog?.("Sync complete");
+    return stats;
+
+    onProgress("Updating cache...", 95);
+    await this.updateCache(newSummary, details);
+    this.onLog?.("Cache updated successfully");
+
+    this.onLog?.("Sync complete");
     return stats;
   }
 
@@ -234,6 +282,8 @@ export class SyncEngine {
   private needsCharacterRefresh(detail: MediaDetail): boolean {
     const edges = detail.characters?.edges;
     if (!Array.isArray(edges) || edges.length === 0) return true;
+    // Incomplete list: hasNextPage was true (more pages exist)
+    if (detail.characters?.pageInfo?.hasNextPage) return true;
     return edges.some((edge) => !edge?.node?.id || !Array.isArray(edge.voiceActors));
   }
 
@@ -544,6 +594,14 @@ export class SyncEngine {
     this.cache = { ...this.cache, noteHashes, paths };
   }
 
+  private cacheCharacterPages(mediaId: number, type: string, hasCharacters: boolean): void {
+    if (!this.cache.characterPages) {
+      this.cache.characterPages = {};
+    }
+    const key = `${type}:${mediaId}`;
+    this.cache.characterPages[key] = hasCharacters;
+  }
+
   private async updateCache(
     newSummary: Record<string, number>,
     detailsMap: Map<string, MediaDetail>,
@@ -554,6 +612,7 @@ export class SyncEngine {
       details: Object.fromEntries(detailsMap),
       noteHashes: this.cache?.noteHashes ?? {},
       paths: this.cache?.paths ?? {},
+      characterPages: this.cache?.characterPages ?? {},
     };
     await this.cacheStore.save(newCache);
     this.cache = newCache;

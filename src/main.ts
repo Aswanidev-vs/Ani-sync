@@ -17,6 +17,13 @@ interface AnisyncData {
   cache: AnisyncCache;
 }
 
+export interface SyncLogEntry {
+  timestamp: string;
+  message: string;
+}
+
+const MAX_SYNC_LOG_ENTRIES = 500;
+
 class SyncProgressPopup {
   private el: HTMLDivElement | null = null;
   private fill: HTMLDivElement | null = null;
@@ -67,6 +74,8 @@ export default class AnisyncPlugin extends Plugin {
   private syncIntervalId: number | null = null;
   private settingTab: AnisyncSettingTab | null = null;
   private syncPopup = new SyncProgressPopup();
+  private syncLog: SyncLogEntry[] = [];
+  private logListeners: (() => void)[] = [];
 
   async onload(): Promise<void> {
     await this.loadAll();
@@ -299,7 +308,7 @@ export default class AnisyncPlugin extends Plugin {
       outputDir: this.settings.outputDir,
       username: this.settings.anilistUsername,
       cache: this.cache,
-      onLog: () => {},
+      onLog: (msg) => this.pushLog(msg),
       onProgress: (m, p) => {
         this.syncPopup.show(m, p ?? this.estimateProgress(m));
       },
@@ -366,6 +375,32 @@ export default class AnisyncPlugin extends Plugin {
   async clearCache(): Promise<void> {
     this.cache = emptyCache();
     await this.saveAll();
+  }
+
+  pushLog(message: string): void {
+    const entry: SyncLogEntry = { timestamp: new Date().toISOString(), message };
+    this.syncLog.push(entry);
+    if (this.syncLog.length > MAX_SYNC_LOG_ENTRIES) {
+      this.syncLog.shift();
+    }
+    for (const listener of this.logListeners) {
+      try { listener(); } catch {}
+    }
+  }
+
+  getSyncLog(): SyncLogEntry[] {
+    return [...this.syncLog];
+  }
+
+  clearLog(): void {
+    this.syncLog = [];
+    for (const listener of this.logListeners) {
+      try { listener(); } catch {}
+    }
+  }
+
+  onLogChange(listener: () => void): void {
+    this.logListeners.push(listener);
   }
 
   private buildVaultAdapter(): VaultAdapter {

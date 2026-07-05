@@ -1,6 +1,8 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
-import AnisyncPlugin, { ClearCacheConfirmModal } from "./main";
+import AnisyncPlugin, { ClearCacheConfirmModal, SyncLogEntry } from "./main";
 import { fetchModels } from "./openrouter/client";
+
+type LogLevel = "info" | "success" | "warn" | "error";
 
 export class AnisyncSettingTab extends PluginSettingTab {
   private plugin: AnisyncPlugin;
@@ -40,9 +42,15 @@ export class AnisyncSettingTab extends PluginSettingTab {
     const s = this.plugin.settings;
     const hasToken = !!s.anilistToken;
 
-    containerEl.createEl("h3", { text: "AniList Connection" });
+    const section = containerEl.createDiv({ cls: "anisync-openrouter-panel" });
+    const hero = section.createDiv({ cls: "anisync-openrouter-hero" });
+    hero.createDiv({ cls: "anisync-openrouter-kicker", text: "Authentication" });
+    hero.createEl("h3", { text: "AniList Connection" });
+    hero.createEl("p", {
+      text: "Link your AniList account to sync anime and manga lists into your vault.",
+    });
 
-    const card = containerEl.createDiv({ cls: "anisync-status-card" });
+    const card = section.createDiv({ cls: "anisync-status-card" });
     const row = card.createDiv({ cls: "anisync-status-row" });
     row.createDiv({ cls: hasToken ? "anisync-indicator anisync-indicator-ok" : "anisync-indicator anisync-indicator-warn" });
     const text = row.createSpan({ cls: "anisync-status-text" });
@@ -62,12 +70,18 @@ export class AnisyncSettingTab extends PluginSettingTab {
   private renderSyncSection(containerEl: HTMLElement): void {
     const s = this.plugin.settings;
 
-    containerEl.createEl("h3", { text: "Sync" });
+    const section = containerEl.createDiv({ cls: "anisync-openrouter-panel" });
+    const hero = section.createDiv({ cls: "anisync-openrouter-hero" });
+    hero.createDiv({ cls: "anisync-openrouter-kicker", text: "Sync Status" });
+    hero.createEl("h3", { text: "Sync" });
+    hero.createEl("p", {
+      text: "Monitor sync status and manage your AniList connection.",
+    });
 
     if (s.lastSyncAt) {
       const dt = new Date(s.lastSyncAt);
       const ago = this.getTimeAgo(dt);
-      const el = containerEl.createDiv({ cls: "anisync-last-sync" });
+      const el = section.createDiv({ cls: "anisync-last-sync" });
       el.createSpan({ cls: "anisync-last-sync-label" }).setText("Last sync: ");
       el.createSpan({ cls: "anisync-last-sync-time" }).setText(ago + " ago");
       if (s.lastSyncStats) {
@@ -76,7 +90,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
     }
 
     if (s.anilistToken) {
-      new Setting(containerEl)
+      new Setting(section)
         .setName("AniList username")
         .setDesc("Auto-detected from your AniList account.")
         .addText((text) =>
@@ -87,7 +101,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
     }
 
     if (!s.anilistToken) {
-      new Setting(containerEl)
+      new Setting(section)
         .setName("Connect to AniList")
         .setDesc("Opens AniList authorization page. After approving, connection is established automatically.")
         .addButton((btn) =>
@@ -100,7 +114,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
             }),
         );
     } else {
-      new Setting(containerEl)
+      new Setting(section)
         .setName("Disconnect")
         .setDesc("Remove your AniList connection.")
         .addButton((btn) =>
@@ -123,7 +137,15 @@ export class AnisyncSettingTab extends PluginSettingTab {
   private renderSyncSettingsSection(containerEl: HTMLElement): void {
     const s = this.plugin.settings;
 
-    new Setting(containerEl)
+    const section = containerEl.createDiv({ cls: "anisync-openrouter-panel" });
+    const hero = section.createDiv({ cls: "anisync-openrouter-hero" });
+    hero.createDiv({ cls: "anisync-openrouter-kicker", text: "Configuration" });
+    hero.createEl("h3", { text: "Sync Settings" });
+    hero.createEl("p", {
+      text: "Configure where and how often your AniList data is synced.",
+    });
+
+    new Setting(section)
       .setName("Output folder")
       .setDesc("Vault folder where notes are created.")
       .addText((text) =>
@@ -136,7 +158,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
           }),
       );
 
-    new Setting(containerEl)
+    new Setting(section)
       .setName("Auto-sync")
       .setDesc("Automatically sync at regular intervals while Obsidian is open.")
       .addToggle((toggle) =>
@@ -153,7 +175,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
         }),
       );
 
-    new Setting(containerEl)
+    new Setting(section)
       .setName("Sync interval (seconds)")
       .setDesc("How often to check for updates (minimum 30 seconds).")
       .addText((text) =>
@@ -356,14 +378,16 @@ export class AnisyncSettingTab extends PluginSettingTab {
       ["characters", "Characters", "#fbbf24"],
     ];
 
-    containerEl.createEl("h3", { text: "Graph Colors" });
-    containerEl.createEl("p", {
+    const section = containerEl.createDiv({ cls: "anisync-openrouter-panel" });
+    const hero = section.createDiv({ cls: "anisync-openrouter-hero" });
+    hero.createDiv({ cls: "anisync-openrouter-kicker", text: "Customization" });
+    hero.createEl("h3", { text: "Graph Colors" });
+    hero.createEl("p", {
       text: "Customise the colours used for each note type in Obsidian's graph view.",
-      cls: "setting-item-description",
     });
 
     for (const [key, label] of labels) {
-      new Setting(containerEl)
+      new Setting(section)
         .setName(label)
         .addColorPicker((picker) =>
           picker
@@ -376,7 +400,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
         );
     }
 
-    new Setting(containerEl)
+    new Setting(section)
       .setName("Apply to graph now")
       .setDesc("Update graph.json with the colours above.")
       .addButton((btn) =>
@@ -388,9 +412,15 @@ export class AnisyncSettingTab extends PluginSettingTab {
   }
 
   private renderActionsSection(containerEl: HTMLElement): void {
-    containerEl.createEl("h3", { text: "Actions" });
+    const section = containerEl.createDiv({ cls: "anisync-openrouter-panel" });
+    const hero = section.createDiv({ cls: "anisync-openrouter-hero" });
+    hero.createDiv({ cls: "anisync-openrouter-kicker", text: "Utilities" });
+    hero.createEl("h3", { text: "Actions" });
+    hero.createEl("p", {
+      text: "Manually trigger sync, clear cache, or manage plugin data.",
+    });
 
-    new Setting(containerEl)
+    new Setting(section)
       .setName("Sync now")
       .setDesc("Manually trigger a sync with AniList.")
       .addButton((btn) =>
@@ -402,7 +432,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
           }),
       );
 
-    new Setting(containerEl)
+    new Setting(section)
       .setName("Clear sync cache")
       .setDesc("Force a complete re-sync by clearing all cached data.")
       .addButton((btn) =>
@@ -412,6 +442,103 @@ export class AnisyncSettingTab extends PluginSettingTab {
             new ClearCacheConfirmModal(this.app, this.plugin).open();
           }),
       );
+
+    // Sync log viewer
+    const logSection = section.createDiv({ cls: "anisync-log-section" });
+    logSection.createEl("h4", { text: "Sync Log" });
+    logSection.createEl("p", {
+      text: "Recent sync activity and debug information.",
+      cls: "setting-item-description",
+    });
+
+    const logContainer = logSection.createDiv({ cls: "anisync-log-container" });
+
+    // Log level detection
+    const detectLevel = (entry: SyncLogEntry): LogLevel => {
+      const msg = entry.message.toLowerCase();
+      if (msg.startsWith("!") || msg.includes("error") || msg.includes("failed") || msg.includes("! write failed") || msg.includes("! delete failed") || msg.includes("! cleanup failed")) return "error";
+      if (msg.includes("warning") || msg.includes("warn") || msg.includes("retry")) return "warn";
+      if (msg.includes("done") || msg.includes("complete") || msg.includes("success") || msg.includes("applied")) return "success";
+      return "info";
+    };
+
+    // Toolbar with filters + action buttons
+    const toolbar = logContainer.createDiv({ cls: "anisync-log-toolbar" });
+
+    // Filter buttons
+    const filterWrap = toolbar.createDiv({ cls: "anisync-log-filter" });
+    let activeFilter: LogLevel | "all" = "all";
+    const filterBtns: Map<LogLevel | "all", HTMLButtonElement> = new Map();
+
+    const addFilterBtn = (label: string, value: LogLevel | "all") => {
+      const btn = filterWrap.createEl("button", { cls: "anisync-log-filter-btn", text: label });
+      if (value === activeFilter) btn.addClass("is-active");
+      filterBtns.set(value, btn);
+      btn.onclick = () => {
+        activeFilter = value;
+        for (const [v, b] of filterBtns) b.toggleClass("is-active", v === value);
+        renderLogEntries();
+      };
+    };
+
+    addFilterBtn("All", "all");
+    addFilterBtn("Info", "info");
+    addFilterBtn("Success", "success");
+    addFilterBtn("Warn", "warn");
+    addFilterBtn("Error", "error");
+
+    // Action buttons
+    const refreshBtn = toolbar.createEl("button", { cls: "anisync-log-btn", text: "Refresh" });
+    refreshBtn.onclick = () => { renderLogEntries(); new Notice("Log refreshed.", 1500); };
+
+    const clearBtn = toolbar.createEl("button", { cls: "anisync-log-btn", text: "Clear" });
+    clearBtn.onclick = () => { this.plugin.clearLog(); renderLogEntries(); new Notice("Log cleared.", 1500); };
+
+    const copyBtn = toolbar.createEl("button", { cls: "anisync-log-btn", text: "Copy" });
+    copyBtn.onclick = () => {
+      const entries = this.plugin.getSyncLog();
+      if (entries.length === 0) { new Notice("No logs to copy.", 3000); return; }
+      const text = entries.map((e) => `[${new Date(e.timestamp).toLocaleTimeString()}] [${detectLevel(e)}] ${e.message}`).join("\n");
+      navigator.clipboard.writeText(text).then(
+        () => new Notice("Logs copied to clipboard.", 3000),
+        () => new Notice("Failed to copy logs.", 3000),
+      );
+    };
+
+    // Log body
+    const logBody = logContainer.createDiv({ cls: "anisync-log-body" });
+
+    const renderLogEntries = () => {
+      logBody.empty();
+      const entries = this.plugin.getSyncLog();
+      const filtered = activeFilter === "all" ? entries : entries.filter((e) => detectLevel(e) === activeFilter);
+
+      if (filtered.length === 0) {
+        const empty = logBody.createDiv({ cls: "anisync-log-empty" });
+        empty.createDiv({ cls: "anisync-log-empty-icon", text: "\u{1F4DC}" });
+        empty.createDiv({ cls: "anisync-log-empty-title", text: "No log entries" });
+        empty.createDiv({ cls: "anisync-log-empty-desc", text: activeFilter === "all" ? "Run a sync to see activity here." : `No ${activeFilter} entries.` });
+        return;
+      }
+
+      for (const entry of filtered) {
+        const level = detectLevel(entry);
+        const row = logBody.createDiv({ cls: `anisync-log-entry is-${level}` });
+        row.createSpan({ cls: "anisync-log-time", text: new Date(entry.timestamp).toLocaleTimeString() });
+        row.createSpan({ cls: `anisync-log-level anisync-log-level-${level}`, text: level });
+        row.createSpan({ cls: "anisync-log-msg", text: entry.message });
+      }
+
+      logBody.scrollTop = logBody.scrollHeight;
+    };
+
+    // Initial render
+    renderLogEntries();
+
+    // Listen for log changes
+    this.plugin.onLogChange(() => {
+      renderLogEntries();
+    });
   }
 
   private getTimeAgo(date: Date): string {

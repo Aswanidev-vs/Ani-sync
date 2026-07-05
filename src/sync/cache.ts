@@ -6,6 +6,7 @@ export interface AnisyncCache {
   details: Record<string, MediaDetail>;
   noteHashes: Record<string, string>;
   paths: Record<string, string>;
+  characterPages?: Record<string, boolean>;
 }
 
 export function emptyCache(): AnisyncCache {

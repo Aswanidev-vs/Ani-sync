@@ -12,9 +12,25 @@ import {
   probeAnilistConnection,
 } from "./auth/implicit";
 
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  timestamp: number;
+}
+
+interface ChatSession {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+  createdAt: number;
+  updatedAt: number;
+}
+
 interface AnisyncData {
   settings: AnisyncSettings;
   cache: AnisyncCache;
+  chatSessions: ChatSession[];
+  activeChatId: string | null;
 }
 
 export interface SyncLogEntry {
@@ -159,6 +175,9 @@ export default class AnisyncPlugin extends Plugin {
     this.app.workspace.detachLeavesOfType(CHAT_VIEW_TYPE);
   }
 
+  chatSessions: ChatSession[] = [];
+  activeChatId: string | null = null;
+
   async loadAll(): Promise<void> {
     const raw = (await this.loadData()) as Partial<AnisyncData> | null;
     if (raw && typeof raw === "object") {
@@ -173,6 +192,12 @@ export default class AnisyncPlugin extends Plugin {
       if (raw.cache && typeof raw.cache === "object" && raw.cache.version === 1) {
         this.cache = raw.cache;
       }
+      if (Array.isArray(raw.chatSessions)) {
+        this.chatSessions = raw.chatSessions;
+      }
+      if (raw.activeChatId) {
+        this.activeChatId = raw.activeChatId;
+      }
     } else {
       const legacy = raw as Partial<AnisyncSettings> | null;
       if (legacy && typeof legacy === "object") {
@@ -186,8 +211,73 @@ export default class AnisyncPlugin extends Plugin {
   }
 
   async saveAll(): Promise<void> {
-    const data: AnisyncData = { settings: this.settings, cache: this.cache };
+    const data: AnisyncData = {
+      settings: this.settings,
+      cache: this.cache,
+      chatSessions: this.chatSessions,
+      activeChatId: this.activeChatId,
+    };
     await this.saveData(data);
+  }
+
+  getActiveChatMessages(): ChatMessage[] {
+    if (!this.activeChatId) return [];
+    const session = this.chatSessions.find(s => s.id === this.activeChatId);
+    return session?.messages ?? [];
+  }
+
+  saveChatMessage(role: "user" | "assistant", content: string): void {
+    if (!this.activeChatId) {
+      this.activeChatId = this.generateSessionId();
+    }
+    let session = this.chatSessions.find(s => s.id === this.activeChatId);
+    if (!session) {
+      session = {
+        id: this.activeChatId,
+        title: this.getChatTitle(content),
+        messages: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      this.chatSessions.push(session);
+    }
+    session.messages.push({ role, content, timestamp: Date.now() });
+    session.updatedAt = Date.now();
+    if (session.messages.length > 50) {
+      session.messages = session.messages.slice(-50);
+    }
+    this.saveAll();
+  }
+
+  startNewChat(): string {
+    const newId = this.generateSessionId();
+    this.activeChatId = newId;
+    this.chatSessions.push({
+      id: newId,
+      title: "New Chat",
+      messages: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    this.saveAll();
+    return newId;
+  }
+
+  getAllChatSessions(): ChatSession[] {
+    return [...this.chatSessions].sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  loadChatSession(sessionId: string): void {
+    this.activeChatId = sessionId;
+    this.saveAll();
+  }
+
+  private generateSessionId(): string {
+    return `chat_${Date.now()}_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+  }
+
+  private getChatTitle(firstMessage: string): string {
+    return firstMessage.slice(0, 40) + (firstMessage.length > 40 ? "..." : "");
   }
 
   canSync(): boolean {

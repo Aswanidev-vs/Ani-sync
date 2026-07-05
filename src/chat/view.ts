@@ -21,6 +21,7 @@ export class ChatView extends ItemView {
   private messagesEl!: HTMLDivElement;
   private inputEl!: HTMLTextAreaElement;
   private sendBtn!: HTMLButtonElement;
+  private newChatBtn!: HTMLButtonElement;
   private loadingEl!: HTMLDivElement;
   private currentStream: StreamingMessage | null = null;
   private vaultContext: VaultContext | null = null;
@@ -39,28 +40,30 @@ export class ChatView extends ItemView {
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
     container.addClass("anisync-chat-container");
-    container.style.cssText = "display: flex; flex-direction: column; height: 100%; overflow: hidden;";
 
+    // Header bar with title + new chat button
+    const header = container.createDiv({ cls: "anisync-chat-header" });
+    const title = header.createSpan({ cls: "anisync-chat-header-title" });
+    title.textContent = "Ani-sync Chat";
+    this.newChatBtn = header.createEl("button", { cls: "anisync-chat-new-btn", title: "New chat" });
+    this.newChatBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>`;
+    this.newChatBtn.onclick = () => this.clearChat();
+
+    // Messages area
     this.messagesEl = container.createDiv({ cls: "anisync-chat-messages" });
-    this.messagesEl.style.cssText = "flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; align-content: flex-start; min-height: 0;";
 
+    // Input area
     const inputArea = container.createDiv({ cls: "anisync-chat-input-area" });
-    inputArea.style.cssText = "display: flex; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--background-modifier-border); background: var(--background-primary); flex-shrink: 0;";
 
     this.inputEl = inputArea.createEl("textarea", {
       cls: "anisync-chat-input",
       attr: { placeholder: "Ask about your AniList library...", rows: "2" },
     });
-    this.inputEl.style.cssText = "flex: 1; resize: none; border: 1px solid var(--background-modifier-border); border-radius: 6px; padding: 6px 10px; font-size: 13px; background: var(--background-secondary); color: var(--text-normal); min-height: 36px;";
 
-    this.sendBtn = inputArea.createEl("button", {
-      cls: "anisync-chat-send-btn",
-      text: "Send",
-    });
-    this.sendBtn.style.cssText = "align-self: flex-end; padding: 6px 14px; border-radius: 6px; border: none; background: var(--color-accent); color: var(--text-on-accent); font-size: 13px; font-weight: 600; cursor: pointer;";
+    this.sendBtn = inputArea.createEl("button", { cls: "anisync-chat-send-btn" });
+    this.sendBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>`;
 
     this.loadingEl = container.createDiv({ cls: "anisync-chat-loading" });
-    this.loadingEl.style.cssText = "padding: 6px 12px; font-size: 12px; color: var(--text-muted); text-align: center;";
     this.loadingEl.hide();
 
     this.sendBtn.onclick = () => this.handleSend();
@@ -68,7 +71,20 @@ export class ChatView extends ItemView {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); this.handleSend(); }
     };
 
-    this.showWelcome("Loading your library...");
+    // Load chat history
+    const messages = this.plugin.getActiveChatMessages();
+    if (messages.length > 0) {
+      for (const msg of messages) {
+        if (msg.role === "user") {
+          this.addUserMessage(msg.content, false);
+        } else {
+          this.addAssistantMessage(msg.content, false);
+        }
+      }
+      this.scrollDown();
+    } else {
+      this.showWelcome("Loading your library...");
+    }
     this.preloadVaultContext();
   }
 
@@ -78,7 +94,7 @@ export class ChatView extends ItemView {
       this.vaultContext = new VaultContext(this.plugin.app, outputDir);
       this.lastOutputDir = outputDir;
     }
-    await this.vaultContext.load();
+    await this.vaultContext.load((msg) => this.showWelcome(msg));
     if (!this.hasChatMessages()) {
       this.showWelcome();
     }
@@ -90,10 +106,17 @@ export class ChatView extends ItemView {
     }
   }
 
+  private clearChat(): void {
+    this.currentStream = null;
+    this.messagesEl.empty();
+    this.plugin.startNewChat();
+    this.showWelcome();
+  }
+
   private showWelcome(loadingText?: string): void {
-    if (this.hasChatMessages()) {
-      return;
-    }
+    if (this.hasChatMessages() && !loadingText) return;
+    if (!loadingText && this.messagesEl.querySelector(".anisync-chat-welcome")) return;
+
     this.messagesEl.empty();
     this.messagesEl.style.backgroundImage = `url(${LOGO_DATA_URL})`;
     this.messagesEl.style.backgroundRepeat = "no-repeat";
@@ -104,7 +127,6 @@ export class ChatView extends ItemView {
     const text = username ? `Search anime, ${username}` : "Search anime";
 
     const msg = this.messagesEl.createDiv({ cls: "anisync-chat-welcome" });
-    msg.style.cssText = "text-align: center; padding: 180px 16px 32px; font-family: var(--font-interface); font-size: 18px; color: var(--text-muted);";
     msg.setText(loadingText ?? text);
   }
 
@@ -112,7 +134,6 @@ export class ChatView extends ItemView {
     const text = this.inputEl.value.trim();
     if (!text) return;
 
-    // Quick response for greetings / out-of-context — no vault load, no API call
     const quick = this.getQuickResponse(text);
     if (quick) {
       this.addUserMessage(text);
@@ -124,7 +145,6 @@ export class ChatView extends ItemView {
     this.inputEl.value = "";
     this.sendBtn.disabled = true;
 
-    // Preflight: check API key and model before vault load
     const apiKey = this.plugin.settings.openrouterApiKey;
     const model = this.plugin.settings.openrouterModel;
     const availableModels = this.plugin.settings.openrouterAvailableModels;
@@ -140,10 +160,9 @@ export class ChatView extends ItemView {
       return;
     }
 
-    // Build or reuse vault context
     const outputDir = this.plugin.settings.outputDir;
     if (this.vaultContext && this.lastOutputDir === outputDir && this.vaultContext.getLoadedCount() > 0) {
-      // already loaded — just search
+      // already loaded
     } else if (!this.vaultContext || this.lastOutputDir !== outputDir) {
       this.vaultContext = new VaultContext(this.plugin.app, outputDir);
       this.lastOutputDir = outputDir;
@@ -152,13 +171,11 @@ export class ChatView extends ItemView {
       await this.vaultContext.load();
     }
 
-    // Search and build context for LLM
     const context = await this.vaultContext.buildContextForQuery(text);
 
-    // Create the assistant bubble directly (no renderMarkdown on empty content)
     const msgEl = this.createAssistantBubble();
     const bubbleEl = msgEl.lastChild as HTMLDivElement;
-    bubbleEl.innerHTML = '<span class="anisync-chat-thinking">Thinking...</span>';
+    bubbleEl.innerHTML = '<span class="anisync-chat-thinking"><span class="anisync-thinking-dot"></span><span class="anisync-thinking-dot"></span><span class="anisync-thinking-dot"></span></span>';
     this.scrollDown();
 
     try {
@@ -179,15 +196,10 @@ export class ChatView extends ItemView {
 
       if (this.currentStream) {
         await new Promise<void>((resolve) => {
-          if (!this.currentStream) {
-            resolve();
-            return;
-          }
+          if (!this.currentStream) { resolve(); return; }
           this.currentStream.resolve = resolve;
           this.finishStreaming();
-          if (!this.currentStream.animationId) {
-            this.flushCompletedStream();
-          }
+          if (!this.currentStream.animationId) this.flushCompletedStream();
         });
       }
 
@@ -195,8 +207,7 @@ export class ChatView extends ItemView {
         await this.renderMarkdown(bubbleEl, "No response received from the model.", false);
       }
     } catch (err) {
-      const e = err as Error;
-      const msg = e.message ?? String(e);
+      const msg = (err as Error).message ?? String(err);
       if (msg.includes("name not resolved") || msg.includes("ENOTFOUND") || msg.includes("DNS")) {
         bubbleEl.innerHTML = "Cannot reach OpenRouter API — DNS resolution failed. Check your internet connection or the API endpoint.";
       } else if (msg.includes("401") || msg.includes("unauthorized") || msg.includes("Unauthorized")) {
@@ -244,7 +255,6 @@ export class ChatView extends ItemView {
       return;
     }
 
-    // Batch-render: skip if a render is already queued
     if (!s.bubbleEl.querySelector(".anisync-cursor")) {
       s.bubbleEl.empty();
       MarkdownRenderer.render(this.plugin.app, s.displayedContent, s.bubbleEl, "", this);
@@ -260,13 +270,10 @@ export class ChatView extends ItemView {
   private flushCompletedStream(): void {
     const s = this.currentStream;
     if (!s || s.resolved || !s.isComplete) return;
-
     s.resolved = true;
-    void this.renderMarkdown(
-      s.bubbleEl,
-      s.fullContent.trim() ? s.fullContent : "No response received from the model.",
-      false,
-    ).finally(() => {
+    const content = s.fullContent.trim() ? s.fullContent : "No response received from the model.";
+    void this.renderMarkdown(s.bubbleEl, content, false).finally(() => {
+      this.plugin.saveChatMessage("assistant", content);
       s.resolve();
     });
   }
@@ -280,41 +287,38 @@ export class ChatView extends ItemView {
     this.scrollDown();
   }
 
-  private addUserMessage(text: string): void {
+  private addUserMessage(text: string, save = true): void {
     this.removeWelcome();
     const msg = this.messagesEl.createDiv({ cls: "anisync-chat-message anisync-chat-message-user" });
-    msg.style.cssText = "display: flex; gap: 8px; max-width: 95%; align-self: flex-end; flex-direction: row-reverse;";
     const bubble = msg.createDiv({ cls: "anisync-chat-bubble" });
     bubble.setText(text);
     this.scrollDown();
+    if (save) this.plugin.saveChatMessage("user", text);
   }
 
-  private addAssistantMessage(text: string): void {
+  private addAssistantMessage(text: string, save = true): void {
     this.removeWelcome();
     const msg = this.messagesEl.createDiv({ cls: "anisync-chat-message anisync-chat-message-assistant" });
-    msg.style.cssText = "display: flex; gap: 8px; max-width: 95%; align-self: flex-start;";
-    const icon = msg.createSpan({ cls: "anisync-chat-avatar", text: "AI" });
+    const icon = msg.createSpan({ cls: "anisync-chat-avatar" });
+    icon.textContent = "AI";
     const bubble = msg.createDiv({ cls: "anisync-chat-bubble" });
     this.renderMarkdown(bubble, text, false);
+    if (save) this.plugin.saveChatMessage("assistant", text);
   }
 
   private createAssistantBubble(): HTMLDivElement {
     this.removeWelcome();
     const msg = this.messagesEl.createDiv({ cls: "anisync-chat-message anisync-chat-message-assistant" });
-    msg.style.cssText = "display: flex; gap: 8px; max-width: 95%; align-self: flex-start;";
     const icon = msg.createSpan({ cls: "anisync-chat-avatar" });
-    icon.style.cssText = "width: 24px; height: 24px; border-radius: 4px; background: var(--color-accent); color: var(--text-on-accent); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; flex-shrink: 0;";
-    icon.setText("AI");
+    icon.textContent = "AI";
     msg.createDiv({ cls: "anisync-chat-bubble" });
+    this.scrollDown();
     return msg;
   }
 
   private removeWelcome(): void {
     const w = this.messagesEl.querySelector(".anisync-chat-welcome");
-    if (w) {
-      w.remove();
-      this.messagesEl.style.backgroundImage = "none";
-    }
+    if (w) { w.remove(); this.messagesEl.style.backgroundImage = "none"; }
   }
 
   private hasChatMessages(): boolean {
@@ -335,7 +339,7 @@ export class ChatView extends ItemView {
       return "Bye! Happy watching/reading!";
     if (["who are you", "what are you", "what can you do", "help"].some(g => t.includes(g)))
       return "I'm an AI assistant with access to your synced AniList library.\n\n**Examples:**\n- \"What anime have I rated 10?\"\n- \"Show me all Studio MAPPA works\"\n- \"What's my highest rated manga?\"\n- \"Who voices Naruto?\"";
-    if (["weather", "news", "politics", "code", "programming", "math", "recipe", "movie", "game", "stock", "crypto"].some(k => t.includes(k)))
+    if (["weather", "news", "politics", "code", "programming", "math", "recipe", "stock", "crypto"].some(k => t.includes(k)))
       return "I can only answer questions about your AniList library. Try asking about your anime, manga, characters, or voice actors.";
     return null;
   }

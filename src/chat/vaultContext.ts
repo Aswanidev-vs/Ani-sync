@@ -25,6 +25,22 @@ const TYPE_MAP: Record<string, VaultNode["type"]> = {
 
 const TRIGRAM_SIZE = 3;
 
+// Simple synonym expansion for common anime/manga terms
+const SYNONYM_MAP: Record<string, string[]> = {
+  "manga": ["novel", "light novel", "web novel", "ln"],
+  "anime": ["tv", "ova", "ona", "movie", "film"],
+  "finished": ["completed", "done"],
+  "completed": ["finished"],
+  "watching": ["current", "in progress"],
+  "reading": ["current", "in progress"],
+  "dropped": ["abandoned"],
+  "best": ["highest rated", "top rated", "favorite"],
+  "worst": ["lowest rated", "bottom rated"],
+  "popular": ["trending", "most viewed"],
+  "voice actor": ["seiyuu", "va", "cast"],
+  "actor": ["seiyuu", "voice actor"],
+};
+
 function buildTrigrams(text: string): Set<string> {
   const trigrams = new Set<string>();
   const lower = text.toLowerCase();
@@ -63,6 +79,18 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   let intersection = 0;
   for (const t of a) if (b.has(t)) intersection++;
   return intersection / (a.size + b.size - intersection);
+}
+
+function expandQuery(query: string): string {
+  const words = query.toLowerCase().split(/\s+/);
+  const expanded = new Set<string>(words);
+  for (const word of words) {
+    const synonyms = SYNONYM_MAP[word];
+    if (synonyms) {
+      for (const syn of synonyms) expanded.add(syn);
+    }
+  }
+  return [...expanded].join(" ");
 }
 
 interface IndexEntry {
@@ -145,16 +173,23 @@ class SearchIndex {
       }
       if (links.length > 0) this.linkGraph.set(node.id, links);
 
-      // Metadata index
+      // Metadata index — index key fields for direct lookup
       const metaFields: [string, string][] = [];
       if (node.frontmatter.type) metaFields.push(["type", String(node.frontmatter.type).toLowerCase()]);
       if (node.frontmatter.mediaType) metaFields.push(["mediaType", String(node.frontmatter.mediaType).toLowerCase()]);
       if (node.frontmatter.status) metaFields.push(["status", String(node.frontmatter.status).toLowerCase()]);
+      if (node.frontmatter.format) metaFields.push(["format", String(node.frontmatter.format).toLowerCase()]);
+      if (node.frontmatter.listName) metaFields.push(["listName", String(node.frontmatter.listName).toLowerCase()]);
+      if (node.frontmatter.score != null) metaFields.push(["score", String(node.frontmatter.score)]);
+      if (node.frontmatter.averageScore != null) metaFields.push(["averageScore", String(node.frontmatter.averageScore)]);
       if (Array.isArray(node.frontmatter.voiceActors)) {
         for (const va of node.frontmatter.voiceActors) metaFields.push(["voiceActor", String(va).toLowerCase()]);
       }
       if (Array.isArray(node.frontmatter.genres)) {
         for (const g of node.frontmatter.genres) metaFields.push(["genre", String(g).toLowerCase()]);
+      }
+      if (Array.isArray(node.frontmatter.tags)) {
+        for (const t of node.frontmatter.tags) metaFields.push(["tag", String(t).toLowerCase()]);
       }
       for (const [field, value] of metaFields) {
         if (!this.metaIndex.has(field)) this.metaIndex.set(field, new Map());
@@ -240,8 +275,10 @@ class SearchIndex {
     const q = query.toLowerCase().trim();
     if (!q || this.entries.length === 0) return [];
 
-    const queryTrigrams = buildTrigrams(q);
-    const queryTokens = tokenize(q);
+    // Expand query with synonyms
+    const expandedQuery = expandQuery(q);
+    const queryTrigrams = buildTrigrams(expandedQuery);
+    const queryTokens = tokenize(expandedQuery);
 
     // Detect query intent: if user asks about voice/voiced/character, boost those types
     const vaIntent = /voice|voiced|voiced by|speaks|language|va|seiyuu|japanese|caste|act(e|or|ress)/i.test(q);
@@ -254,12 +291,23 @@ class SearchIndex {
       let score = 0;
       let matchedField = "";
 
+      // Exact match on title or IDs
       if (entry.node.title.toLowerCase() === q) { score = 100; matchedField = "title:exact"; }
       else if (entry.node.frontmatter.anilistId && String(entry.node.frontmatter.anilistId) === q) { score = 100; matchedField = "anilistId"; }
       else if (entry.node.frontmatter.mediaId && String(entry.node.frontmatter.mediaId) === q) { score = 100; matchedField = "mediaId"; }
       else if (entry.node.title.toLowerCase().includes(q)) { score = 80 + (q.length / (entry.node.title.length || 1)) * 15; matchedField = "title:contains"; }
       else if (entry.node.frontmatter.name && String(entry.node.frontmatter.name).toLowerCase().includes(q)) { score = 75; matchedField = "frontmatter:name"; }
       else if (entry.node.frontmatter.nativeName && String(entry.node.frontmatter.nativeName).toLowerCase().includes(q)) { score = 70; matchedField = "nativeName"; }
+
+      // Also check expanded synonyms against title
+      if (score < 70) {
+        for (const word of expandedQuery.split(/\s+/)) {
+          if (word !== q && entry.node.title.toLowerCase().includes(word)) {
+            score = Math.max(score, 65);
+            matchedField = "synonym:title";
+          }
+        }
+      }
 
       if (score < 70) {
         const titleSim = jaccard(queryTrigrams, entry.titleTrigrams);
@@ -321,15 +369,16 @@ export class VaultContext {
     this.loadingPromise = null;
   }
 
-  async load(): Promise<void> {
+  async load(onProgress?: (msg: string) => void): Promise<void> {
     if (this.loaded) return;
     if (this.loadingPromise) return this.loadingPromise;
 
     this.loadingPromise = (async () => {
       const folder = this.app.vault.getAbstractFileByPath(this.basePath);
-      if (!folder) return;
+      if (!folder) { onProgress?.("Folder not found"); return; }
 
       const files = this.getAllMarkdownFiles(folder);
+      onProgress?.(`Found ${files.length} files`);
       // Parallel file reads (batch of 20)
       const BATCH = 20;
       for (let i = 0; i < files.length; i += BATCH) {
@@ -338,10 +387,13 @@ export class VaultContext {
         for (const node of nodes) {
           if (node) this.nodes.push(node);
         }
+        onProgress?.(`Read ${Math.min(i + BATCH, files.length)}/${files.length} files (${this.nodes.length} indexed)`);
       }
+      onProgress?.("Building search index...");
       this.loaded = true;
       this.index = new SearchIndex();
       this.index.build(this.nodes);
+      onProgress?.("Index ready — " + this.nodes.length + " entries indexed");
     })();
 
     return this.loadingPromise;
@@ -531,7 +583,7 @@ export class VaultContext {
   buildPromptContext(results: VaultSearchResult[]): string {
     if (results.length === 0) return "No matching data found in your AniList library.";
     const parts = [
-      "The following data is from the user's synced AniList library (vault). Answer ONLY from this information.",
+      "The following data is from the user's synced AniList library (vault). Answer ONLY from this information. Do not say you can only answer from this information - just answer directly.",
       "---",
     ];
 
@@ -542,12 +594,17 @@ export class VaultContext {
       if (n.frontmatter.type) lines.push(`  Media Type: ${n.frontmatter.type}`);
       if (n.frontmatter.format) lines.push(`  Format: ${n.frontmatter.format}`);
       if (n.frontmatter.status) lines.push(`  Status: ${n.frontmatter.status}`);
-      if (n.frontmatter.averageScore != null) lines.push(`  Score: ${n.frontmatter.averageScore}`);
+      if (n.frontmatter.score != null) lines.push(`  User Score: ${n.frontmatter.score}/10`);
+      if (n.frontmatter.averageScore != null) lines.push(`  Average Score: ${n.frontmatter.averageScore}/100`);
       if (n.frontmatter.episodes != null) lines.push(`  Episodes: ${n.frontmatter.episodes}`);
       if (n.frontmatter.chapters != null) lines.push(`  Chapters: ${n.frontmatter.chapters} | Volumes: ${n.frontmatter.volumes ?? "?"}`);
+      if (n.frontmatter.duration) lines.push(`  Duration: ${n.frontmatter.duration} min`);
       if (n.frontmatter.genres) lines.push(`  Genres: ${Array.isArray(n.frontmatter.genres) ? n.frontmatter.genres.join(", ") : n.frontmatter.genres}`);
       if (n.frontmatter.language) lines.push(`  Language: ${n.frontmatter.language}`);
       if (n.frontmatter.tags && Array.isArray(n.frontmatter.tags)) lines.push(`  Tags: ${n.frontmatter.tags.join(", ")}`);
+      if (n.frontmatter.listName) lines.push(`  List: ${n.frontmatter.listName}`);
+      if (n.frontmatter.progress != null) lines.push(`  Progress: ${n.frontmatter.progress}`);
+      if (n.frontmatter.anilistUrl) lines.push(`  URL: ${n.frontmatter.anilistUrl}`);
 
       // Full body content — no truncation, no block selection
       const bodyLines = n.body.split("\n");

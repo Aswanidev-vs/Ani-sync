@@ -399,8 +399,12 @@ export default class AnisyncPlugin extends Plugin {
     }
   }
 
-  onLogChange(listener: () => void): void {
+  onLogChange(listener: () => void): () => void {
     this.logListeners.push(listener);
+    return () => {
+      const idx = this.logListeners.indexOf(listener);
+      if (idx !== -1) this.logListeners.splice(idx, 1);
+    };
   }
 
   private buildVaultAdapter(): VaultAdapter {

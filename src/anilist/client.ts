@@ -344,38 +344,14 @@ export class AnilistClient {
         consecutiveFailures += 1;
         this.onLog?.(`  ! page ${page} failed (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${e?.message ?? String(err)}`);
 
-        // If we hit a 400 complexity error with perPage=50, retry this page with perPage=25
+        // If we hit a 400 complexity error, halve perPage, adjust page to maintain offset, and retry
         if (e?.status === 400 && /(cost|complexity|too ?complex)/i.test(e?.message ?? "") && perPage >= 25) {
-          const reducedPerPage = Math.floor(perPage / 2);
-          this.onLog?.(`  [${type}:${mediaId}] complexity error on page ${page}, retrying with perPage=${reducedPerPage}`);
-          try {
-            const reducedData = await this.request<{
-              Media: { characters: { pageInfo: { hasNextPage: boolean }; edges: AnilistCharacterEdge[] } };
-            }>(CHARACTERS_PAGE_QUERY, { id: mediaId, type, page, perPage: reducedPerPage });
-            const reducedConn = reducedData?.Media?.characters;
-            if (reducedConn?.edges) {
-              consecutiveFailures = 0;
-              for (const e of reducedConn.edges) {
-                if (!e?.node?.id) continue;
-                const key = `${e.node.id}:${e.role ?? ""}`;
-                const existing = edgeMap.get(key);
-                if (!existing) {
-                  edgeMap.set(key, {
-                    ...e,
-                    voiceActors: [...(e.voiceActors ?? [])],
-                  });
-                  continue;
-                }
-                existing.voiceActors = mergeVoiceActors(existing.voiceActors ?? [], e.voiceActors ?? []);
-              }
-              if (!reducedConn.pageInfo?.hasNextPage) break;
-              page += 1;
-              if (page > 50) break;
-              continue; // skip the failure check below
-            }
-          } catch (retryErr) {
-            this.onLog?.(`  ! reduced-perPage retry also failed for page ${page}: ${(retryErr as Error)?.message ?? String(retryErr)}`);
-          }
+          const offset = (page - 1) * perPage;
+          perPage = Math.floor(perPage / 2);
+          page = Math.floor(offset / perPage) + 1;
+          consecutiveFailures = 0;
+          this.onLog?.(`  [${type}:${mediaId}] complexity error on page, retrying with perPage=${perPage} at page ${page}`);
+          continue;
         }
 
         if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {

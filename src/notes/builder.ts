@@ -456,24 +456,8 @@ export function buildArtifacts(built: BuiltArtifacts, syncedAt: string): NoteArt
     }
   }
 
-  // Track character filenames for deduplication
-  const charFileTracker = new Map<string, number>();
-
   for (const [slug, mediaList] of mediaBySlug) {
-    // Determine filename with deduplication
-    const count = charFileTracker.get(slug) ?? 0;
-    charFileTracker.set(slug, count + 1);
-
-    let filename: string;
-    if (count === 0) {
-      // First occurrence uses base slug
-      filename = `${slug}.md`;
-    } else {
-      // Subsequent occurrences get type suffix to disambiguate
-      const types = [...new Set(mediaList.map(m => m.type))];
-      const typeSuffix = types.length === 1 ? `-${types[0]}` : '';
-      filename = `${slug}${typeSuffix}.md`;
-    }
+    const filename = `${slug}.md`;
 
     if (mediaList.length === 1) {
       artifacts.push(buildMediaCharacterArtifact(mediaList[0], built.characters, charMediaLookup, syncedAt, filename));

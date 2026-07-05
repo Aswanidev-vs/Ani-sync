@@ -6,10 +6,15 @@ type LogLevel = "info" | "success" | "warn" | "error";
 
 export class AnisyncSettingTab extends PluginSettingTab {
   private plugin: AnisyncPlugin;
+  private logCleanup?: () => void;
 
   constructor(app: App, plugin: AnisyncPlugin) {
     super(app, plugin);
     this.plugin = plugin;
+  }
+
+  hide(): void {
+    this.logCleanup?.();
   }
 
   display(): void {
@@ -536,7 +541,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
     renderLogEntries();
 
     // Listen for log changes
-    this.plugin.onLogChange(() => {
+    this.logCleanup = this.plugin.onLogChange(() => {
       renderLogEntries();
     });
   }

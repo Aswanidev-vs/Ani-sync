@@ -580,7 +580,7 @@ export class VaultContext {
     return this.nodes.filter((n) => n.body.toLowerCase().includes(q) && (n.type === "anime" || n.type === "manga"));
   }
 
-  buildPromptContext(results: VaultSearchResult[]): string {
+  buildPromptContext(results: VaultSearchResult[], query?: string): string {
     if (results.length === 0) return "No matching data found in your AniList library.";
     const parts = [
       "The following data is from the user's synced AniList library (vault). Answer ONLY from this information. Do not say you can only answer from this information - just answer directly.",
@@ -606,40 +606,93 @@ export class VaultContext {
       if (n.frontmatter.progress != null) lines.push(`  Progress: ${n.frontmatter.progress}`);
       if (n.frontmatter.anilistUrl) lines.push(`  URL: ${n.frontmatter.anilistUrl}`);
 
-      // Extract key body sections (headings and their content)
+      // For Voice-Actors.md and other huge files, extract only relevant sections
       const bodyLines = n.body.split("\n");
-      let currentSection = "";
-      let sectionLines: string[] = [];
-
-      for (const line of bodyLines) {
-        const trimmed = line.trim();
-        if (trimmed.startsWith("# ")) continue; // skip H1 (title)
-        if (trimmed.startsWith("## ")) {
-          if (currentSection && sectionLines.length > 0) {
-            lines.push(`  [${currentSection}]`);
-            for (const sl of sectionLines.slice(0, 15)) { // max 15 lines per section
-              lines.push(`    ${sl}`);
+      const searchTerms = query ? query.toLowerCase().split(/\s+/) : [];
+      
+      if (n.type === "voice_actor_index" && searchTerms.length > 0) {
+        // Extract only sections matching the query
+        let currentSection = "";
+        let sectionLines: string[] = [];
+        const matchedSections: string[] = [];
+        
+        for (const line of bodyLines) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith("# ")) continue;
+          if (trimmed.startsWith("## ")) {
+            if (currentSection) {
+              // Check if this section matches any search term
+              const sectionLower = currentSection.toLowerCase();
+              if (searchTerms.some(t => sectionLower.includes(t) && t.length >= 2)) {
+                matchedSections.push(`  [${currentSection}]`);
+                for (const sl of sectionLines) {
+                  matchedSections.push(`    ${sl}`);
+                }
+                matchedSections.push("");
+              }
+            }
+            currentSection = trimmed.slice(3).trim();
+            sectionLines = [];
+          } else {
+            sectionLines.push(trimmed);
+          }
+        }
+        // Check last section
+        if (currentSection) {
+          const sectionLower = currentSection.toLowerCase();
+          if (searchTerms.some(t => sectionLower.includes(t) && t.length >= 2)) {
+            matchedSections.push(`  [${currentSection}]`);
+            for (const sl of sectionLines) {
+              matchedSections.push(`    ${sl}`);
             }
           }
-          currentSection = trimmed.slice(3).trim();
-          sectionLines = [];
-        } else if (trimmed.startsWith("### ")) {
-          if (currentSection) sectionLines.push(`**${trimmed.slice(4).trim()}**`);
-        } else if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
-          sectionLines.push(trimmed);
-        } else if (!trimmed.startsWith("![") && !trimmed.startsWith("|")) {
-          sectionLines.push(trimmed);
         }
-      }
-      // Flush last section
-      if (currentSection && sectionLines.length > 0) {
-        lines.push(`  [${currentSection}]`);
-        for (const sl of sectionLines.slice(0, 15)) {
-          lines.push(`    ${sl}`);
+        
+        // If no sections matched, do a broad text search for any line containing query terms
+        if (matchedSections.length === 0) {
+          for (const line of bodyLines) {
+            const lineLower = line.toLowerCase();
+            if (searchTerms.some(t => lineLower.includes(t) && t.length >= 2)) {
+              matchedSections.push(`  ${line.trim()}`);
+            }
+          }
         }
-      } else if (sectionLines.length > 0) {
-        for (const sl of sectionLines.slice(0, 20)) {
-          lines.push(`  ${sl}`);
+        
+        lines.push(...matchedSections.slice(0, 50)); // Limit to 50 lines max
+      } else {
+        // Normal body content extraction
+        let currentSection = "";
+        let sectionLines: string[] = [];
+        
+        for (const line of bodyLines) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith("# ")) continue;
+          if (trimmed.startsWith("## ")) {
+            if (currentSection && sectionLines.length > 0) {
+              lines.push(`  [${currentSection}]`);
+              for (const sl of sectionLines.slice(0, 15)) {
+                lines.push(`    ${sl}`);
+              }
+            }
+            currentSection = trimmed.slice(3).trim();
+            sectionLines = [];
+          } else if (trimmed.startsWith("### ")) {
+            if (currentSection) sectionLines.push(`**${trimmed.slice(4).trim()}**`);
+          } else if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+            sectionLines.push(trimmed);
+          } else if (!trimmed.startsWith("![") && !trimmed.startsWith("|")) {
+            sectionLines.push(trimmed);
+          }
+        }
+        if (currentSection && sectionLines.length > 0) {
+          lines.push(`  [${currentSection}]`);
+          for (const sl of sectionLines.slice(0, 15)) {
+            lines.push(`    ${sl}`);
+          }
+        } else if (sectionLines.length > 0) {
+          for (const sl of sectionLines.slice(0, 20)) {
+            lines.push(`  ${sl}`);
+          }
         }
       }
 
@@ -653,7 +706,7 @@ export class VaultContext {
   async buildContextForQuery(query: string): Promise<string> {
     await this.load();
     const results = this.search(query);
-    return this.buildPromptContext(results);
+    return this.buildPromptContext(results, query);
   }
 }
 

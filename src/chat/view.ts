@@ -339,7 +339,7 @@ export class ChatView extends ItemView {
       return "Bye! Happy watching/reading!";
     if (["who are you", "what are you", "what can you do", "help"].some(g => t.includes(g)))
       return "I'm an AI assistant with access to your synced AniList library.\n\n**Examples:**\n- \"What anime have I rated 10?\"\n- \"Show me all Studio MAPPA works\"\n- \"What's my highest rated manga?\"\n- \"Who voices Naruto?\"";
-    if (["weather", "news", "politics", "code", "programming", "math", "recipe", "movie", "game", "stock", "crypto"].some(k => t.includes(k)))
+    if (["weather", "news", "politics", "code", "programming", "math", "recipe", "stock", "crypto"].some(k => t.includes(k)))
       return "I can only answer questions about your AniList library. Try asking about your anime, manga, characters, or voice actors.";
     return null;
   }

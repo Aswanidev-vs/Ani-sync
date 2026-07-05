@@ -47,6 +47,11 @@ function showError(msg) {
     show("state-success");
     // Redirect to Obsidian via deep link — this is the reliable path
     window.location.href = "obsidian://ani-sync?token=" + encodeURIComponent(token);
+    // Attempt to auto-close the tab after a brief delay
+    // (window.close() only works for script-opened tabs)
+    setTimeout(() => {
+      window.close();
+    }, 1500);
     return;
   }
 

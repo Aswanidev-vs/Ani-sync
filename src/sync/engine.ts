@@ -174,31 +174,36 @@ export class SyncEngine {
     for (const m of fetchedAnime) if (m) details.set(`ANIME:${m.id}`, this.mergeMediaDetail(cachedDetails.get(`ANIME:${m.id}`), m));
     for (const m of fetchedManga) if (m) details.set(`MANGA:${m.id}`, this.mergeMediaDetail(cachedDetails.get(`MANGA:${m.id}`), m));
 
-    const detailsNeedingCharacters = [...details.values()].filter((m) => {
-      const chars = m.characters;
-      const edges = chars?.edges;
-      // Safer check: only treat explicitly-false hasNextPage as "complete"
-      // (undefined/null hasNextPage means "maybe more pages")
-      if (!edges || edges.length === 0) return true;
-      if (edges.length < 50) return false; // less than a full page, no pagination needed
-      return chars?.pageInfo?.hasNextPage ?? true; // undefined/null → trigger fetch
-    });
+    // Collect keys of freshly fetched media — always re-fetch their characters
+    // because the batch query can truncate character data due to complexity limits
+    const freshlyFetchedKeys = new Set<string>();
+    for (const m of fetchedAnime) if (m) freshlyFetchedKeys.add(`ANIME:${m.id}`);
+    for (const m of fetchedManga) if (m) freshlyFetchedKeys.add(`MANGA:${m.id}`);
+
+    const detailsNeedingCharacters = [...details.entries()].filter(([key, m]) => {
+      // Always re-fetch characters for freshly fetched media (batch query may have truncated them)
+      if (freshlyFetchedKeys.has(key)) return true;
+      // For cached entries, only re-fetch if the character list looks incomplete
+      return this.needsCharacterRefresh(m);
+    }).map(([, m]) => m);
+
     if (detailsNeedingCharacters.length > 0) {
-      this.onLog?.(`  character fetch needed for ${detailsNeedingCharacters.length} media entries`);
+      this.onLog?.(`  character fetch needed for ${detailsNeedingCharacters.length} media entries (${freshlyFetchedKeys.size} freshly fetched, ${detailsNeedingCharacters.length - freshlyFetchedKeys.size} cache refresh)`);
+      for (const m of detailsNeedingCharacters) {
+        const existing = m.characters?.edges?.length ?? 0;
+        this.onLog?.(`    -> ${m.type}:${m.id} ("${m.title?.userPreferred ?? m.title?.romaji ?? "?"}") [${existing} existing chars]`);
+      }
       await pMapLimit(detailsNeedingCharacters, 4, async (m) => {
         if (this.cancelled) return;
         try {
-          const existingCount = m.characters?.edges?.length ?? 0;
-          const fetchedEdges = await this.anilist.fetchAllCharacters(m.id, m.type, 2);
-          const fetchedCount = fetchedEdges.length;
-          this.onLog?.(`  ${m.type}:${m.id}: had ${existingCount} chars from batch, fetched ${fetchedCount} more`);
-          m.characters = this.mergeCharacterConnections(
-            { edges: m.characters?.edges ?? [], pageInfo: { hasNextPage: false } },
-            { edges: fetchedEdges, pageInfo: { hasNextPage: false } },
-          );
+          const fetchedEdges = await this.anilist.fetchAllCharacters(m.id, m.type, 1);
+          this.onLog?.(`  ${m.type}:${m.id}: fetched ${fetchedEdges.length} characters total`);
+          m.characters = {
+            edges: fetchedEdges,
+            pageInfo: { hasNextPage: false },
+          };
         } catch (err) {
           this.onLog?.(`  ! character fetch failed for ${m.type}:${m.id}: ${(err as Error)?.message ?? String(err)}`);
-          // Reset characters so needsCharacterRefresh() returns true on next sync
           m.characters = undefined;
         }
       });
@@ -277,6 +282,8 @@ export class SyncEngine {
   private needsCharacterRefresh(detail: MediaDetail): boolean {
     const edges = detail.characters?.edges;
     if (!Array.isArray(edges) || edges.length === 0) return true;
+    // Incomplete list: hasNextPage was true (more pages exist)
+    if (detail.characters?.pageInfo?.hasNextPage) return true;
     return edges.some((edge) => !edge?.node?.id || !Array.isArray(edge.voiceActors));
   }
 

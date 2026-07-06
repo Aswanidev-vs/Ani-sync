@@ -8,7 +8,8 @@ export function slugify(input: string): string {
     .split(" ")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
     .join(" ")
-    .slice(0, 120);
+    .slice(0, 120)
+    .trim();
 }
 
 export function slugifyAnchor(name: string): string {

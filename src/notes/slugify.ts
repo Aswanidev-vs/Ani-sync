@@ -5,9 +5,11 @@ export function slugify(input: string): string {
     .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "")
     .replace(/\s+/g, " ")
     .trim()
-    .replace(/ /g, "-")
-    .replace(/-+/g, "-")
-    .slice(0, 120);
+    .split(" ")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ")
+    .slice(0, 120)
+    .trim();
 }
 
 export function slugifyAnchor(name: string): string {

@@ -244,7 +244,7 @@ export class SyncEngine {
       return stats;
     }
 
-    this.onLog?.(`Write complete: ${stats.created} created, ${stats.updated} updated, ${stats.skipped} unchanged, ${stats.failed} failed`);
+    this.onLog?.(`Write complete: ${stats.created} created, ${stats.updated} updated, ${stats.skipped} skipped, ${stats.failed} problems`);
 
     onProgress(`Removing ${removed.length} obsolete note(s)...`, 92);
     this.onLog?.(`Removing ${removed.length} obsolete note(s)`);
@@ -255,13 +255,6 @@ export class SyncEngine {
 
     onProgress("Cleaning up legacy character files...", 94);
     await this.cleanupLegacyCharacterArtifacts(stats);
-
-    onProgress("Updating cache...", 95);
-    await this.updateCache(newSummary, details);
-    this.onLog?.("Cache updated successfully");
-
-    this.onLog?.("Sync complete");
-    return stats;
 
     onProgress("Updating cache...", 95);
     await this.updateCache(newSummary, details);
@@ -280,11 +273,13 @@ export class SyncEngine {
   }
 
   private needsCharacterRefresh(detail: MediaDetail): boolean {
-    const edges = detail.characters?.edges;
-    if (!Array.isArray(edges) || edges.length === 0) return true;
-    // Incomplete list: hasNextPage was true (more pages exist)
-    if (detail.characters?.pageInfo?.hasNextPage) return true;
-    return edges.some((edge) => !edge?.node?.id || !Array.isArray(edge.voiceActors));
+    const conn = detail.characters;
+    if (!conn) return true;
+    const edges = conn.edges;
+    if (!Array.isArray(edges)) return true;
+    if (edges.length === 0) return !!conn.pageInfo?.hasNextPage;
+    if (conn.pageInfo?.hasNextPage) return true;
+    return edges.some((edge) => !edge?.node?.id);
   }
 
   private mergeMediaDetail(existing: MediaDetail | undefined, incoming: MediaDetail): MediaDetail {

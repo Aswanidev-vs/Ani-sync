@@ -5,8 +5,9 @@ export function slugify(input: string): string {
     .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "")
     .replace(/\s+/g, " ")
     .trim()
-    .replace(/ /g, "-")
-    .replace(/-+/g, "-")
+    .split(" ")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ")
     .slice(0, 120);
 }
 

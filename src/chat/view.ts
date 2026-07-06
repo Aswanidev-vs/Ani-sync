@@ -120,7 +120,7 @@ export class ChatView extends ItemView {
     this.messagesEl.empty();
     this.messagesEl.style.backgroundImage = `url(${LOGO_DATA_URL})`;
     this.messagesEl.style.backgroundRepeat = "no-repeat";
-    this.messagesEl.style.backgroundPosition = "center 40px";
+    this.messagesEl.style.backgroundPosition = "center 88px";
     this.messagesEl.style.backgroundSize = "120px auto";
 
     const username = this.plugin.settings.anilistUsername;

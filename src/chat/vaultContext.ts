@@ -14,7 +14,11 @@ export interface VaultSearchResult {
   node: VaultNode;
   score: number;
   matchedField: string;
+  matchedHeading?: string;
+  matchedSection?: string;
 }
+
+type QueryMode = "entity" | "summary" | "report";
 
 const TYPE_MAP: Record<string, VaultNode["type"]> = {
   ANIME: "anime", MANGA: "manga", STAFF: "staff",
@@ -40,6 +44,16 @@ const SYNONYM_MAP: Record<string, string[]> = {
   "voice actor": ["seiyuu", "va", "cast"],
   "actor": ["seiyuu", "voice actor"],
 };
+
+const QUERY_STOP_WORDS = new Set([
+  "who", "what", "when", "where", "why", "how",
+  "is", "was", "are", "were", "do", "does", "did",
+  "tell", "me", "about", "the", "a", "an", "of",
+  "in", "on", "at", "to", "from", "for", "and",
+  "or", "please", "character", "characters",
+  "voice", "actor", "actors", "va", "seiyuu",
+  "voices", "voiced", "by", "series", "anime", "manga",
+]);
 
 function buildTrigrams(text: string): Set<string> {
   const trigrams = new Set<string>();
@@ -93,21 +107,153 @@ function expandQuery(query: string): string {
   return [...expanded].join(" ");
 }
 
+function extractEntityCandidates(query: string): string[] {
+  const normalized = query.toLowerCase().trim();
+  const candidates = new Set<string>();
+
+  const patterns = [
+    /who\s+is\s+(.+)/i,
+    /tell\s+me\s+about\s+(.+)/i,
+    /who\s+voices\s+(.+)/i,
+    /who\s+voiced\s+(.+)/i,
+    /what\s+is\s+(.+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = query.match(pattern);
+    if (match?.[1]) {
+      const cleaned = match[1].trim().replace(/[?.!,]+$/g, "");
+      if (cleaned) candidates.add(cleaned.toLowerCase());
+    }
+  }
+
+  const tokens = tokenize(normalized).filter((token) => !QUERY_STOP_WORDS.has(token));
+  if (tokens.length > 0) {
+    candidates.add(tokens.join(" "));
+  }
+  if (tokens.length > 1) {
+    for (let i = 0; i < tokens.length - 1; i++) {
+      candidates.add(tokens.slice(i).join(" "));
+      candidates.add(tokens.slice(0, tokens.length - i).join(" "));
+    }
+  }
+
+  return [...candidates].filter((candidate) => candidate.length >= 2);
+}
+
+function detectQueryMode(query: string): QueryMode {
+  const q = query.toLowerCase().trim();
+
+  if (/(report|analysis|analyze|compare|comparison|overview|list all|all of|group by|breakdown|table|stats|statistics|trend|trends)/i.test(q)) {
+    return "report";
+  }
+
+  if (/(tell me about|describe|details on|details about|summary of|summarize|what can you tell me about)/i.test(q)) {
+    return "summary";
+  }
+
+  if (/(who is|who are|who voices|who voiced|what is)/i.test(q)) {
+    return "entity";
+  }
+
+  return "entity";
+}
+
+function parseConstraints(query: string): ParsedConstraints {
+  const q = query.toLowerCase();
+  const statuses: string[] = [];
+  if (/\bcompleted|finished\b/i.test(q)) statuses.push("completed");
+  if (/\bwatching|current|in progress\b/i.test(q)) statuses.push("current");
+  if (/\bplanned|plan to watch|plan to read\b/i.test(q)) statuses.push("planned");
+  if (/\bdropped\b/i.test(q)) statuses.push("dropped");
+  if (/\bpaused\b/i.test(q)) statuses.push("paused");
+  if (/\brepeating|rewatching|rereading\b/i.test(q)) statuses.push("repeating");
+
+  const collectAfter = (patterns: RegExp[]): string[] => {
+    const out = new Set<string>();
+    for (const pattern of patterns) {
+      const match = query.match(pattern);
+      if (match?.[1]) out.add(match[1].trim().replace(/[?.!,]+$/g, "").toLowerCase());
+    }
+    return [...out].filter(Boolean);
+  };
+
+  const genreKeywords = ["romance", "action", "comedy", "drama", "fantasy", "slice of life", "thriller", "mystery", "horror", "sports", "sci fi", "supernatural"];
+  const genres = genreKeywords.filter((genre) => q.includes(genre));
+  const scoreMatch = query.match(/\b(?:score|rated?|rating)\s*(?:above|over|>=|at least)?\s*(\d{1,2})\b/i);
+
+  return {
+    typeFilter: /\banime\b/i.test(q) ? "anime" : /\bmanga\b/i.test(q) ? "manga" : null,
+    statuses,
+    genres,
+    tags: collectAfter([/\btag(?:s)?\s+(?:is|are|of|like)?\s*(.+)/i]),
+    studios: collectAfter([/\bstudio\s+(.+)/i, /\bby studio\s+(.+)/i]),
+    voiceActors: collectAfter([/\bvoic(?:e|ed) actor\s+(.+)/i, /\bseiyuu\s+(.+)/i, /\bvoiced by\s+(.+)/i]),
+    characters: collectAfter([/\bcharacter\s+(.+)/i]),
+    minScore: scoreMatch ? Number(scoreMatch[1]) : null,
+  };
+}
+
+function extractAliases(node: VaultNode): string[] {
+  const aliases = new Set<string>();
+  aliases.add(node.title);
+
+  if (node.frontmatter.name) aliases.add(String(node.frontmatter.name));
+  if (node.frontmatter.nativeName) aliases.add(String(node.frontmatter.nativeName));
+
+  const fmTitle = node.frontmatter.title as Record<string, unknown> | undefined;
+  if (fmTitle) {
+    for (const key of ["romaji", "english", "native"]) {
+      const value = fmTitle[key];
+      if (typeof value === "string" && value.trim()) aliases.add(value.trim());
+    }
+  }
+
+  const mediaTitle = node.frontmatter.mediaTitle;
+  if (typeof mediaTitle === "string" && mediaTitle.trim()) aliases.add(mediaTitle.trim());
+
+  return [...aliases].filter((alias) => alias.trim().length > 0);
+}
+
 interface IndexEntry {
   node: VaultNode;
   titleTrigrams: Set<string>;
   bodyTrigrams: Set<string>;
   titleTokens: string[];
   bodyTokens: string[];
+  aliases: string[];
+  aliasTokens: string[][];
+  headings: string[];
+  headingTokens: string[][];
   titleFreq: Map<string, number>;
   bodyFreq: Map<string, number>;
   totalTokens: number;
+  sections: SectionEntry[];
+}
+
+interface SectionEntry {
+  heading: string;
+  content: string;
+  tokens: string[];
+  trigrams: Set<string>;
+  freq: Map<string, number>;
 }
 
 interface LinkInfo {
   sourceId: string;
   targetFile: string;
   text: string;
+}
+
+interface ParsedConstraints {
+  typeFilter: "anime" | "manga" | null;
+  statuses: string[];
+  genres: string[];
+  tags: string[];
+  studios: string[];
+  voiceActors: string[];
+  characters: string[];
+  minScore: number | null;
 }
 
 class SearchIndex {
@@ -144,6 +290,8 @@ class SearchIndex {
 
       const titleTrigrams = buildTrigrams(titleStr);
       const bodyTrigrams = buildTrigrams(`${titleStr} ${node.body}`);
+      const aliases = extractAliases(node);
+      const aliasTokens = aliases.map((alias) => tokenize(alias));
 
       const allTokens = new Set([...titleTokens, ...bodyTokens]);
       for (const token of allTokens) {
@@ -152,15 +300,20 @@ class SearchIndex {
 
       // Extract ## headings for heading index
       const lines = node.body.split("\n");
+      const headings: string[] = [];
       for (const line of lines) {
         if (line.startsWith("## ")) {
-          const headingLower = line.slice(3).trim().toLowerCase();
+          const headingRaw = line.slice(3).trim();
+          const headingLower = headingRaw.toLowerCase();
           if (headingLower.length >= 2) {
+            headings.push(headingRaw);
             if (!this.headingIndex.has(headingLower)) this.headingIndex.set(headingLower, []);
             this.headingIndex.get(headingLower)!.push(node.id);
           }
         }
       }
+      const headingTokens = headings.map((heading) => tokenize(heading));
+      const sections = this.extractSections(node.body);
 
       // Link graph
       const links: LinkInfo[] = [];
@@ -185,6 +338,15 @@ class SearchIndex {
       if (Array.isArray(node.frontmatter.voiceActors)) {
         for (const va of node.frontmatter.voiceActors) metaFields.push(["voiceActor", String(va).toLowerCase()]);
       }
+      if (Array.isArray(node.frontmatter.characters)) {
+        for (const c of node.frontmatter.characters) metaFields.push(["character", String(c).toLowerCase()]);
+      }
+      if (Array.isArray(node.frontmatter.studios)) {
+        for (const s of node.frontmatter.studios) metaFields.push(["studio", String(s).toLowerCase()]);
+      }
+      if (Array.isArray(node.frontmatter.staff)) {
+        for (const p of node.frontmatter.staff) metaFields.push(["staff", String(p).toLowerCase()]);
+      }
       if (Array.isArray(node.frontmatter.genres)) {
         for (const g of node.frontmatter.genres) metaFields.push(["genre", String(g).toLowerCase()]);
       }
@@ -200,12 +362,48 @@ class SearchIndex {
 
       this.entries.push({
         node, titleTrigrams, bodyTrigrams,
-        titleTokens, bodyTokens, titleFreq, bodyFreq,
+        titleTokens, bodyTokens, aliases, aliasTokens, headings, headingTokens, titleFreq, bodyFreq,
         totalTokens: bodyTokens.length,
+        sections,
       });
     }
 
     this.df = tokenDocCount;
+  }
+
+  private extractSections(body: string): SectionEntry[] {
+    const lines = body.split("\n");
+    const sections: SectionEntry[] = [];
+    let currentHeading: string | null = null;
+    let currentLines: string[] = [];
+
+    const pushSection = () => {
+      if (!currentHeading) return;
+      const content = currentLines.join("\n").trim();
+      const combined = `${currentHeading}\n${content}`.trim();
+      const tokens = tokenize(combined);
+      const freq = new Map<string, number>();
+      for (const token of tokens) freq.set(token, (freq.get(token) ?? 0) + 1);
+      sections.push({
+        heading: currentHeading,
+        content,
+        tokens,
+        trigrams: buildTrigrams(combined),
+        freq,
+      });
+    };
+
+    for (const line of lines) {
+      if (line.startsWith("## ")) {
+        pushSection();
+        currentHeading = line.slice(3).trim();
+        currentLines = [];
+      } else if (currentHeading) {
+        currentLines.push(line);
+      }
+    }
+    pushSection();
+    return sections;
   }
 
   findHeading(query: string): string[] {
@@ -250,6 +448,19 @@ class SearchIndex {
     return this.metaIndex.get(field)?.get(value.toLowerCase()) ?? new Set();
   }
 
+  metaFilterContains(field: string, value: string): Set<string> {
+    const fieldMap = this.metaIndex.get(field);
+    if (!fieldMap) return new Set();
+    const needle = value.toLowerCase();
+    const out = new Set<string>();
+    for (const [candidate, ids] of fieldMap) {
+      if (candidate.includes(needle) || needle.includes(candidate)) {
+        for (const id of ids) out.add(id);
+      }
+    }
+    return out;
+  }
+
   private idf(term: string): number {
     const docFreq = this.df.get(term) ?? 0;
     if (docFreq === 0) return 0;
@@ -279,6 +490,7 @@ class SearchIndex {
     const expandedQuery = expandQuery(q);
     const queryTrigrams = buildTrigrams(expandedQuery);
     const queryTokens = tokenize(expandedQuery);
+    const entityCandidates = extractEntityCandidates(query);
 
     // Detect query intent: if user asks about voice/voiced/character, boost those types
     const vaIntent = /voice|voiced|voiced by|speaks|language|va|seiyuu|japanese|caste|act(e|or|ress)/i.test(q);
@@ -309,7 +521,69 @@ class SearchIndex {
         }
       }
 
+      if (score < 78) {
+        for (const alias of entry.aliases) {
+          const aliasLower = alias.toLowerCase();
+          if (aliasLower === q) {
+            score = Math.max(score, 96);
+            matchedField = "alias:exact";
+            break;
+          }
+          if (aliasLower.includes(q) || q.includes(aliasLower)) {
+            score = Math.max(score, 82);
+            matchedField = "alias:contains";
+          }
+        }
+      }
+
       if (score < 70) {
+        for (const section of entry.sections) {
+          const overlap = queryTokens.filter((term) => section.tokens.includes(term)).length;
+          if (overlap === 0) continue;
+          const coverage = overlap / Math.max(1, queryTokens.length);
+          const tri = jaccard(queryTrigrams, section.trigrams);
+          const sectionScore = 68 + coverage * 12 + tri * 10;
+          if (sectionScore > score) {
+            score = sectionScore;
+            matchedField = `section:${section.heading}`;
+          }
+        }
+
+        for (let i = 0; i < entry.headingTokens.length; i++) {
+          const headingTokens = entry.headingTokens[i];
+          const matchedTerms = queryTokens.filter((term) => headingTokens.includes(term));
+          if (matchedTerms.length === 0) continue;
+
+          const coverage = matchedTerms.length / Math.max(1, queryTokens.length);
+          const headingLengthPenalty = Math.min(1, matchedTerms.length / Math.max(1, headingTokens.length));
+          const headingScore = 72 + coverage * 18 + headingLengthPenalty * 6;
+
+          if (headingScore > score) {
+            score = headingScore;
+            matchedField = `heading_phrase:${entry.headings[i]}`;
+          }
+        }
+
+        for (const entity of entityCandidates) {
+          const entityTokens = tokenize(entity);
+          if (entityTokens.length === 0) continue;
+          for (let i = 0; i < entry.headingTokens.length; i++) {
+            const headingTokens = entry.headingTokens[i];
+            const exactCoverage = entityTokens.filter((term) => headingTokens.includes(term)).length;
+            if (exactCoverage === 0) continue;
+
+            const coverage = exactCoverage / entityTokens.length;
+            const tightness = exactCoverage / Math.max(1, headingTokens.length);
+            const exactPhrase = entry.headings[i].toLowerCase() === entity;
+            const candidateScore = (exactPhrase ? 98 : 0) + 76 + coverage * 16 + tightness * 6;
+
+            if (candidateScore > score) {
+              score = candidateScore;
+              matchedField = `heading_entity:${entry.headings[i]}`;
+            }
+          }
+        }
+
         const titleSim = jaccard(queryTrigrams, entry.titleTrigrams);
         const bodySim = jaccard(queryTrigrams, entry.bodyTrigrams);
         const triScore = Math.max(titleSim, bodySim) * 60;
@@ -344,7 +618,37 @@ class SearchIndex {
     }
 
     scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, 20).map(s => ({ node: s.entry.node, score: s.score, matchedField: s.matchedField }));
+
+    const reranked = scored.slice(0, 30).map((candidate) => {
+      let rerankBoost = 0;
+      for (const aliasTokens of candidate.entry.aliasTokens) {
+        const overlap = queryTokens.filter((token) => aliasTokens.includes(token)).length;
+        if (overlap > 0) {
+          rerankBoost = Math.max(rerankBoost, overlap * 4 + (overlap === queryTokens.length ? 8 : 0));
+        }
+      }
+      if (candidate.entry.node.type === "media_characters" && entityCandidates.length > 0) rerankBoost += 4;
+      if (candidate.matchedField.startsWith("alias:")) rerankBoost += 6;
+      return { ...candidate, score: candidate.score + rerankBoost };
+    });
+
+    reranked.sort((a, b) => b.score - a.score);
+    return reranked.slice(0, 20).map((s) => {
+      let matchedHeading: string | undefined;
+      let matchedSection: string | undefined;
+      if (s.matchedField.startsWith("heading_phrase:")) {
+        matchedHeading = s.matchedField.slice("heading_phrase:".length);
+      } else if (s.matchedField.startsWith("heading_entity:")) {
+        matchedHeading = s.matchedField.slice("heading_entity:".length);
+      } else if (s.matchedField.startsWith("section:")) {
+        matchedHeading = s.matchedField.slice("section:".length);
+      }
+      if (matchedHeading) {
+        const matched = s.entry.sections.find((section) => section.heading.toLowerCase() === matchedHeading!.toLowerCase());
+        matchedSection = matched ? `## ${matched.heading}\n${matched.content}`.trim() : undefined;
+      }
+      return { node: s.entry.node, score: s.score, matchedField: s.matchedField, matchedHeading, matchedSection };
+    });
   }
 }
 
@@ -493,12 +797,47 @@ export class VaultContext {
   search(query: string): VaultSearchResult[] {
     if (!this.index) return [];
     const results = this.index.search(query);
+    const constraints = parseConstraints(query);
 
     // Heading index: find the best heading match for any word in the query
     const queryWords = query.toLowerCase().trim().split(/[\s,.\-!?()]+/).filter(w => w.length > 2);
+    const entityCandidates = extractEntityCandidates(query);
     if (queryWords.length > 0) {
       const headingHits: VaultSearchResult[] = [];
       const seenIds = new Set<string>();
+      const headingScores = new Map<string, { score: number; heading: string; field: string }>();
+
+      for (const candidate of entityCandidates) {
+        const candidateTokens = tokenize(candidate);
+        if (candidateTokens.length === 0) continue;
+
+        for (const node of this.nodes) {
+          const sections = node.body.split("\n").filter((line) => line.startsWith("## "));
+          for (const section of sections) {
+            const heading = section.slice(3).trim();
+            const headingTokens = tokenize(heading);
+            const overlap = candidateTokens.filter((token) => headingTokens.includes(token)).length;
+            if (overlap === 0) continue;
+
+            const exact = heading.toLowerCase() === candidate;
+            const coverage = overlap / candidateTokens.length;
+            const compactness = overlap / Math.max(1, headingTokens.length);
+            const score = (exact ? 99 : 82) + coverage * 10 + compactness * 4;
+            const prev = headingScores.get(node.id);
+            if (!prev || score > prev.score) {
+              headingScores.set(node.id, { score, heading, field: exact ? `heading:exact:${candidate}` : `heading:entity:${candidate}` });
+            }
+          }
+        }
+      }
+
+      for (const [nodeId, info] of headingScores) {
+        const node = this.nodes.find((n) => n.id === nodeId);
+        if (!node) continue;
+        seenIds.add(node.id);
+        headingHits.push({ node, score: info.score, matchedField: info.field, matchedHeading: info.heading });
+      }
+
       for (const word of queryWords) {
         const ids = this.index.findHeadingSmart(word);
         for (const id of ids) {
@@ -510,10 +849,11 @@ export class VaultContext {
           // Find the exact heading that matched for score quality
           const nodeHeadings = this.index.findHeading(word);
           const matchesWell = nodeHeadings.some(hid => hid === id);
-          headingHits.push({ node, score: matchesWell ? 95 : 85, matchedField: `heading:${word}` });
+          headingHits.push({ node, score: matchesWell ? 95 : 85, matchedField: `heading:${word}`, matchedHeading: word });
         }
       }
       if (headingHits.length > 0) {
+        headingHits.sort((a, b) => b.score - a.score);
         // Link graph: also include files linked from matched files
         const linkedIds = new Set<string>();
         for (const h of headingHits) {
@@ -527,20 +867,49 @@ export class VaultContext {
         }
         for (const id of linkedIds) {
           const node = this.nodes.find(n => n.id === id);
-          if (node) headingHits.push({ node, score: 65, matchedField: `link:${queryWords[0]}` });
+          if (node) headingHits.push({ node, score: 65, matchedField: `link:${queryWords[0]}`, matchedHeading: queryWords[0] });
         }
         return headingHits.slice(0, 10);
       }
     }
 
-    // Metadata filter: detect type-specific queries
-    const typeFilter = /anime|manga/i.test(query) ? (query.toLowerCase().includes("manga") ? "manga" : "anime") : null;
-    const filteredResults = results.filter(r => {
-      if (!typeFilter) return true;
+    // Metadata filter: detect type-specific and structured queries
+    let filteredResults = results.filter(r => {
+      if (!constraints.typeFilter) return true;
       const nodeType = String(r.node.frontmatter.type ?? "").toLowerCase();
       const mediaType = String(r.node.frontmatter.mediaType ?? "").toLowerCase();
-      return nodeType === typeFilter || mediaType === typeFilter || r.node.type === typeFilter;
+      return nodeType === constraints.typeFilter || mediaType === constraints.typeFilter || r.node.type === constraints.typeFilter;
     });
+
+    const constrainedIds = new Set<string>();
+    const addConstraintMatches = (field: string, values: string[]) => {
+      for (const value of values) {
+        for (const id of this.index!.metaFilterContains(field, value)) constrainedIds.add(id);
+      }
+    };
+    addConstraintMatches("genre", constraints.genres);
+    addConstraintMatches("tag", constraints.tags);
+    addConstraintMatches("studio", constraints.studios);
+    addConstraintMatches("voiceActor", constraints.voiceActors);
+    addConstraintMatches("character", constraints.characters);
+    if (constraints.statuses.length > 0) addConstraintMatches("status", constraints.statuses);
+
+    if (constrainedIds.size > 0) {
+      filteredResults = filteredResults
+        .filter((r) => constrainedIds.has(r.node.id) || r.score >= 80)
+        .map((r) => ({
+          ...r,
+          score: constrainedIds.has(r.node.id) ? r.score + 18 : r.score,
+          matchedField: constrainedIds.has(r.node.id) ? `${r.matchedField}+meta` : r.matchedField,
+        }));
+    }
+
+    if (constraints.minScore != null) {
+      filteredResults = filteredResults.filter((r) => {
+        const userScore = Number(r.node.frontmatter.score ?? -1);
+        return !Number.isNaN(userScore) && userScore >= constraints.minScore!;
+      });
+    }
 
     // Multi-term fallback: when search gives low scores, find nodes containing ALL query terms
     const needsFallback = filteredResults.length === 0 || filteredResults[0].score < 30;
@@ -569,7 +938,7 @@ export class VaultContext {
       }
     }
 
-    return results;
+    return filteredResults.length > 0 ? filteredResults : results;
   }
 
   getAllMedia(): VaultNode[] { return this.nodes.filter((n) => n.type === "anime" || n.type === "manga"); }
@@ -580,14 +949,19 @@ export class VaultContext {
     return this.nodes.filter((n) => n.body.toLowerCase().includes(q) && (n.type === "anime" || n.type === "manga"));
   }
 
-  buildPromptContext(results: VaultSearchResult[]): string {
+  buildPromptContext(results: VaultSearchResult[], mode: QueryMode = "entity"): string {
     if (results.length === 0) return "No matching data found in your AniList library.";
     const parts = [
-      "The following data is from the user's synced AniList library (vault). Answer ONLY from this information. Do not say you can only answer from this information - just answer directly.",
+      mode === "report"
+        ? "The following data is from the user's synced AniList library (vault). Build a structured, comprehensive answer only from this information. Aggregate across results when needed."
+        : mode === "summary"
+          ? "The following data is from the user's synced AniList library (vault). Give a concise but complete answer using only this information."
+          : "The following data is from the user's synced AniList library (vault). Answer ONLY from this information. Do not say you can only answer from this information - just answer directly.",
       "---",
     ];
 
-    for (const r of results.slice(0, 10)) {
+    const limit = mode === "report" ? 15 : mode === "summary" ? 8 : 10;
+    for (const r of results.slice(0, limit)) {
       const n = r.node;
       const lines: string[] = [];
       lines.push(`${n.type.toUpperCase()}: "${n.title}"`);
@@ -606,8 +980,7 @@ export class VaultContext {
       if (n.frontmatter.progress != null) lines.push(`  Progress: ${n.frontmatter.progress}`);
       if (n.frontmatter.anilistUrl) lines.push(`  URL: ${n.frontmatter.anilistUrl}`);
 
-      // Full body content — no truncation, no block selection
-      const bodyLines = n.body.split("\n");
+      const bodyLines = this.extractRelevantBodyLines(n.body, r.matchedHeading, r.matchedSection, mode);
       for (const line of bodyLines) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith("![") || trimmed.startsWith("|")) continue;
@@ -623,8 +996,113 @@ export class VaultContext {
 
   async buildContextForQuery(query: string): Promise<string> {
     await this.load();
-    const results = this.search(query);
-    return this.buildPromptContext(results);
+    const mode = detectQueryMode(query);
+    const results = this.selectResultsForMode(query, mode);
+    return this.buildPromptContext(results, mode);
+  }
+
+  private selectResultsForMode(query: string, mode: QueryMode): VaultSearchResult[] {
+    const baseResults = this.search(query);
+    if (mode === "entity") return baseResults;
+
+    if (mode === "summary") {
+      const deduped = new Map<string, VaultSearchResult>();
+      for (const result of baseResults) {
+        if (!deduped.has(result.node.id)) deduped.set(result.node.id, result);
+      }
+      return [...deduped.values()].slice(0, 8);
+    }
+
+    const queryTokens = tokenize(expandQuery(query));
+    const media = this.getAllMedia();
+    const reportResults: VaultSearchResult[] = [];
+    const seen = new Set<string>();
+
+    for (const result of baseResults) {
+      if (!seen.has(result.node.id)) {
+        reportResults.push(result);
+        seen.add(result.node.id);
+      }
+    }
+
+    for (const node of media) {
+      if (seen.has(node.id)) continue;
+      const text = `${node.title} ${node.body} ${JSON.stringify(node.frontmatter)}`.toLowerCase();
+      const overlap = queryTokens.filter((token) => text.includes(token)).length;
+      if (overlap >= Math.max(1, Math.min(2, queryTokens.length))) {
+        reportResults.push({
+          node,
+          score: 35 + overlap * 8,
+          matchedField: "report:aggregate",
+        });
+        seen.add(node.id);
+      }
+      if (reportResults.length >= 15) break;
+    }
+
+    reportResults.sort((a, b) => b.score - a.score);
+    return reportResults.slice(0, 15);
+  }
+
+  private extractRelevantBodyLines(body: string, matchedHeading?: string, matchedSection?: string, mode: QueryMode = "entity"): string[] {
+    const lines = body.split("\n");
+    if (mode === "report") {
+      return lines.filter((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return false;
+        return trimmed.startsWith("#")
+          || trimmed.startsWith("**Status:**")
+          || trimmed.startsWith("**Score:**")
+          || trimmed.startsWith("**Progress:**")
+          || trimmed.startsWith("## Synopsis")
+          || trimmed.startsWith("## Genres")
+          || trimmed.startsWith("## Tags")
+          || trimmed.startsWith("## Studios")
+          || trimmed.startsWith("## Staff")
+          || trimmed.startsWith("- ");
+      }).slice(0, 80);
+    }
+
+    if (mode === "summary" && !matchedSection && !matchedHeading) {
+      return lines.filter((line) => {
+        const trimmed = line.trim();
+        return trimmed.startsWith("#")
+          || trimmed.startsWith("**Status:**")
+          || trimmed.startsWith("**Score:**")
+          || trimmed.startsWith("**Progress:**")
+          || trimmed.startsWith("## ")
+          || trimmed.startsWith("- ");
+      }).slice(0, 50);
+    }
+
+    if (matchedSection) {
+      const prelude = lines.slice(0, Math.min(lines.length, 10)).filter((line) => line.startsWith("# ") || line.startsWith("**Status:**") || line.startsWith("**Score:**"));
+      return [...prelude, "", ...matchedSection.split("\n")];
+    }
+    if (!matchedHeading) return lines;
+
+    const normalizedHeading = matchedHeading.toLowerCase().trim();
+    let start = -1;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.startsWith("## ") && line.slice(3).trim().toLowerCase().includes(normalizedHeading)) {
+        start = i;
+        break;
+      }
+    }
+
+    if (start === -1) return lines;
+
+    let end = lines.length;
+    for (let i = start + 1; i < lines.length; i++) {
+      if (lines[i].startsWith("## ")) {
+        end = i;
+        break;
+      }
+    }
+
+    const prelude = lines.slice(0, Math.min(lines.length, 10)).filter((line) => line.startsWith("# ") || line.startsWith("**Status:**") || line.startsWith("**Score:**"));
+    return [...prelude, "", ...lines.slice(start, end)];
   }
 }
 

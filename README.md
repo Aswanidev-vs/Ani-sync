@@ -28,7 +28,7 @@ An Obsidian plugin that syncs your [AniList](https://anilist.co/) anime & manga 
 
 | Note type | Folder | Notes per user |
 |-----------|--------|---------------|
-| Anime | `Ani-sync/Anime/` | One per anime on the list |
+| Anime | `Ani-sync/Anime/` | One per anime on the list |mim
 | Manga | `Ani-sync/Manga/` | One per manga on the list |
 | Characters | `Ani-sync/Characters/` | One per anime series, with voice actor data inlined |
 | Studios | `Ani-sync/Studios/` | Referenced by Anime notes |

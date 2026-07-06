@@ -535,6 +535,12 @@ export function buildMediaArtifact(note: MediaNote, titleSlug: string, syncedAt:
     duration: note.duration,
     mediaStart: note.startDate,
     mediaEnd: note.endDate,
+    genres: note.genres,
+    tags: note.tags.map((t) => t.name),
+    studios: note.studios.map((s) => s.name),
+    staff: note.staff.map((p) => p.name),
+    characters: note.characters.map((c) => c.name),
+    voiceActors: [...new Set(note.characters.flatMap((c) => c.voiceActors.map((va) => va.name)))].sort(),
     syncedAt: SYNCED_AT_PLACEHOLDER,
     anilistUrl: note.siteUrl,
   };
@@ -723,6 +729,7 @@ export function buildMediaCharacterArtifact(
     type: "MEDIA_CHARACTERS",
     mediaTitle: title,
     mediaType: mediaNote.type,
+    characters: mediaNote.characters.map((c) => c.name),
     voiceActors: [...vaNames].sort(),
     syncedAt: SYNCED_AT_PLACEHOLDER,
   };
@@ -855,6 +862,7 @@ export function buildMergedCharacterArtifact(
       if (c.role && !mc.roles.includes(c.role)) mc.roles.push(c.role);
     }
   }
+  fm.characters = [...merged.values()].map((c) => c.name).sort();
 
   const charTypeLabels: Record<string, string> = {
     ANIME: "Anime",

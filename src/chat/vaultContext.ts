@@ -1,4 +1,4 @@
-import { TFile } from "obsidian";
+import { TFile, parseYaml } from "obsidian";
 import type { App } from "obsidian";
 
 export interface VaultNode {
@@ -50,9 +50,7 @@ const QUERY_STOP_WORDS = new Set([
   "is", "was", "are", "were", "do", "does", "did",
   "tell", "me", "about", "the", "a", "an", "of",
   "in", "on", "at", "to", "from", "for", "and",
-  "or", "please", "character", "characters",
-  "voice", "actor", "actors", "va", "seiyuu",
-  "voices", "voiced", "by", "series", "anime", "manga",
+  "or", "please", "by", "series",
 ]);
 
 function buildTrigrams(text: string): Set<string> {
@@ -76,10 +74,12 @@ function tokenize(text: string): string[] {
       i++;
       continue;
     }
-    // Alphanumeric sequences
+    // Alphanumeric sequences (include hyphens and underscores as part of words)
     if (/[a-z0-9]/.test(lower[i])) {
       let word = "";
-      while (i < lower.length && /[a-z0-9]/.test(lower[i])) { word += lower[i]; i++; }
+      while (i < lower.length && /[a-z0-9_\-]/.test(lower[i])) { word += lower[i]; i++; }
+      // Trim trailing hyphens/underscores
+      word = word.replace(/[-_]+$/, "");
       if (word.length > 0) tokens.push(word);
       continue;
     }
@@ -96,8 +96,18 @@ function jaccard(a: Set<string>, b: Set<string>): number {
 }
 
 function expandQuery(query: string): string {
-  const words = query.toLowerCase().split(/\s+/);
+  const q = query.toLowerCase();
+  const words = q.split(/\s+/);
   const expanded = new Set<string>(words);
+
+  // Check multi-word phrases first (longer matches take priority)
+  for (const [key, synonyms] of Object.entries(SYNONYM_MAP)) {
+    if (key.includes(" ") && q.includes(key)) {
+      for (const syn of synonyms) expanded.add(syn);
+    }
+  }
+
+  // Then check single words
   for (const word of words) {
     const synonyms = SYNONYM_MAP[word];
     if (synonyms) {
@@ -122,7 +132,10 @@ function extractEntityCandidates(query: string): string[] {
   for (const pattern of patterns) {
     const match = query.match(pattern);
     if (match?.[1]) {
-      const cleaned = match[1].trim().replace(/[?.!,]+$/g, "");
+      const cleaned = match[1]
+        .trim()
+        .replace(/\b(and|also|tell|about|use|series|anime|manga)\b.*$/i, "")
+        .replace(/[?.!,]+$/g, "");
       if (cleaned) candidates.add(cleaned.toLowerCase());
     }
   }
@@ -260,12 +273,15 @@ class SearchIndex {
   entries: IndexEntry[] = [];
   private df = new Map<string, number>();
   private totalDocs = 0;
+  private avgDl = 1;
   // Heading index: lowercase heading → list of node ids
   private headingIndex = new Map<string, string[]>();
   // Link graph: node id → outgoing wikilinks
   private linkGraph = new Map<string, LinkInfo[]>();
   // Metadata index: frontmatter field name → value → set of node ids
   private metaIndex = new Map<string, Map<string, Set<string>>>();
+  // Node lookup map for O(1) access
+  private nodeMap = new Map<string, VaultNode>();
 
   build(nodes: VaultNode[]): void {
     this.entries = [];
@@ -273,6 +289,7 @@ class SearchIndex {
     this.headingIndex.clear();
     this.linkGraph.clear();
     this.metaIndex.clear();
+    this.nodeMap.clear();
     this.totalDocs = nodes.length;
 
     // Pre-compute token frequencies for IDF
@@ -289,7 +306,7 @@ class SearchIndex {
       for (const t of bodyTokens) bodyFreq.set(t, (bodyFreq.get(t) ?? 0) + 1);
 
       const titleTrigrams = buildTrigrams(titleStr);
-      const bodyTrigrams = buildTrigrams(`${titleStr} ${node.body}`);
+      const bodyTrigrams = buildTrigrams(node.body);
       const aliases = extractAliases(node);
       const aliasTokens = aliases.map((alias) => tokenize(alias));
 
@@ -369,6 +386,12 @@ class SearchIndex {
     }
 
     this.df = tokenDocCount;
+
+    // Pre-compute average document length and node map
+    this.avgDl = this.totalDocs > 0 ? this.entries.reduce((s, e) => s + e.totalTokens, 0) / this.totalDocs : 1;
+    for (const entry of this.entries) {
+      this.nodeMap.set(entry.node.id, entry.node);
+    }
   }
 
   private extractSections(body: string): SectionEntry[] {
@@ -444,6 +467,10 @@ class SearchIndex {
     return links.map(l => l.targetFile);
   }
 
+  getNodeById(id: string): VaultNode | undefined {
+    return this.nodeMap.get(id);
+  }
+
   metaFilter(field: string, value: string): Set<string> {
     return this.metaIndex.get(field)?.get(value.toLowerCase()) ?? new Set();
   }
@@ -454,7 +481,8 @@ class SearchIndex {
     const needle = value.toLowerCase();
     const out = new Set<string>();
     for (const [candidate, ids] of fieldMap) {
-      if (candidate.includes(needle) || needle.includes(candidate)) {
+      // Only forward match (candidate contains needle) to avoid false positives on short values
+      if (candidate.includes(needle)) {
         for (const id of ids) out.add(id);
       }
     }
@@ -468,15 +496,14 @@ class SearchIndex {
   }
 
   bm25Score(entry: IndexEntry, queryTokens: string[], k1 = 1.5, b = 0.75): number {
-    const avgDl = this.totalDocs > 0 ? this.entries.reduce((s, e) => s + e.totalTokens, 0) / this.totalDocs : 1;
     let score = 0;
     for (const term of queryTokens) {
       const tfTitle = entry.titleFreq.get(term) ?? 0;
       const tfBody = entry.bodyFreq.get(term) ?? 0;
       const idf = this.idf(term);
       if (idf === 0) continue;
-      const titleScore = (tfTitle * (k1 + 1)) / (tfTitle + k1 * (1 - b + b * (entry.titleTokens.length / (avgDl || 1))));
-      const bodyScore = (tfBody * (k1 + 1)) / (tfBody + k1 * (1 - b + b * (entry.totalTokens / (avgDl || 1))));
+      const titleScore = (tfTitle * (k1 + 1)) / (tfTitle + k1 * (1 - b + b * (entry.titleTokens.length / (this.avgDl || 1))));
+      const bodyScore = (tfBody * (k1 + 1)) / (tfBody + k1 * (1 - b + b * (entry.totalTokens / (this.avgDl || 1))));
       score += idf * (titleScore * 3 + bodyScore);
     }
     return score;
@@ -658,6 +685,7 @@ export class VaultContext {
   private nodes: VaultNode[] = [];
   private loaded = false;
   private index: SearchIndex | null = null;
+  private loadGeneration = 0;
 
   constructor(app: App, basePath: string) {
     this.app = app;
@@ -671,33 +699,45 @@ export class VaultContext {
     this.index = null;
     this.loaded = false;
     this.loadingPromise = null;
+    this.loadGeneration++;
   }
 
   async load(onProgress?: (msg: string) => void): Promise<void> {
     if (this.loaded) return;
     if (this.loadingPromise) return this.loadingPromise;
 
+    const generation = ++this.loadGeneration;
     this.loadingPromise = (async () => {
-      const folder = this.app.vault.getAbstractFileByPath(this.basePath);
-      if (!folder) { onProgress?.("Folder not found"); return; }
+      try {
+        const folder = this.app.vault.getAbstractFileByPath(this.basePath);
+        if (!folder) { onProgress?.("Folder not found"); return; }
 
-      const files = this.getAllMarkdownFiles(folder);
-      onProgress?.(`Found ${files.length} files`);
-      // Parallel file reads (batch of 20)
-      const BATCH = 20;
-      for (let i = 0; i < files.length; i += BATCH) {
-        const batch = files.slice(i, i + BATCH);
-        const nodes = await Promise.all(batch.map(f => this.parseFile(f)));
-        for (const node of nodes) {
-          if (node) this.nodes.push(node);
+        const files = this.getAllMarkdownFiles(folder);
+        onProgress?.(`Found ${files.length} files`);
+        // Parallel file reads (batch of 20)
+        const BATCH = 20;
+        const newNodes: VaultNode[] = [];
+        for (let i = 0; i < files.length; i += BATCH) {
+          // Check if this load was invalidated
+          if (generation !== this.loadGeneration) return;
+          const batch = files.slice(i, i + BATCH);
+          const nodes = await Promise.all(batch.map(f => this.parseFile(f)));
+          for (const node of nodes) {
+            if (node) newNodes.push(node);
+          }
+          onProgress?.(`Read ${Math.min(i + BATCH, files.length)}/${files.length} files (${newNodes.length} indexed)`);
         }
-        onProgress?.(`Read ${Math.min(i + BATCH, files.length)}/${files.length} files (${this.nodes.length} indexed)`);
+        // Check if this load was invalidated before finalizing
+        if (generation !== this.loadGeneration) return;
+        this.nodes = newNodes;
+        onProgress?.("Building search index...");
+        this.index = new SearchIndex();
+        this.index.build(this.nodes);
+        this.loaded = true;
+        onProgress?.("Index ready — " + this.nodes.length + " entries indexed");
+      } finally {
+        if (generation === this.loadGeneration) this.loadingPromise = null;
       }
-      onProgress?.("Building search index...");
-      this.loaded = true;
-      this.index = new SearchIndex();
-      this.index.build(this.nodes);
-      onProgress?.("Index ready — " + this.nodes.length + " entries indexed");
     })();
 
     return this.loadingPromise;
@@ -717,11 +757,13 @@ export class VaultContext {
     try {
       const content = await this.app.vault.read(file);
       const { frontmatter, body } = this.parseFrontmatter(content);
-      if (!frontmatter?.anilistId && !frontmatter?.mediaId && frontmatter?.type !== "VOICE_ACTOR_INDEX") return null;
+      const mediaIds = Array.isArray(frontmatter?.mediaIds) ? frontmatter.mediaIds : [];
+      const hasEntityId = frontmatter?.anilistId != null || frontmatter?.mediaId != null || mediaIds.length > 0;
+      if (!hasEntityId && frontmatter?.type !== "VOICE_ACTOR_INDEX") return null;
 
       const type = frontmatter.type as string;
       const normalizedType = TYPE_MAP[type] ?? type.toLowerCase() as VaultNode["type"];
-      const entityId = frontmatter.anilistId ?? frontmatter.mediaId;
+      const entityId = frontmatter.anilistId ?? frontmatter.mediaId ?? mediaIds.join(",") ?? file.path;
       const id = `${normalizedType}:${entityId}`;
       const title = this.extractTitle(frontmatter, body);
 
@@ -735,55 +777,17 @@ export class VaultContext {
   private parseFrontmatter(content: string): { frontmatter: Record<string, unknown>; body: string } {
     const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     if (!match) return { frontmatter: {}, body: content };
-    const fm: Record<string, unknown> = {};
-    let currentParent: string | null = null;
-    let currentObj: Record<string, unknown> | null = null;
-
-    for (const line of match[1].split(/\r?\n/)) {
-      if (!line.trim()) continue;
-
-      const indentMatch = line.match(/^(\s+)(\S.*)/);
-      if (indentMatch && currentParent && currentObj) {
-        const nested = indentMatch[2];
-        const colonIdx = nested.indexOf(":");
-        if (colonIdx > 0) {
-          const key = nested.slice(0, colonIdx).trim();
-          let value: unknown = nested.slice(colonIdx + 1).trim();
-          if (typeof value === "string") value = this.parseYamlValue(value);
-          currentObj[key] = value;
-        }
-        continue;
-      }
-
-      const colonIdx = line.indexOf(":");
-      if (colonIdx > 0) {
-        const key = line.slice(0, colonIdx).trim();
-        let value: unknown = line.slice(colonIdx + 1).trim();
-        if (value === "") { currentParent = key; currentObj = {}; fm[key] = currentObj; continue; }
-        currentParent = null; currentObj = null;
-        if (typeof value === "string") value = this.parseYamlValue(value);
-        fm[key] = value;
-      }
+    try {
+      const fm = parseYaml(match[1]) ?? {};
+      return { frontmatter: fm, body: content.slice(match[0].length).trim() };
+    } catch {
+      return { frontmatter: {}, body: content.slice(match[0].length).trim() };
     }
-    return { frontmatter: fm, body: content.slice(match[0].length).trim() };
-  }
-
-  private parseYamlValue(value: string): unknown {
-    if (value.startsWith("[") && value.endsWith("]")) {
-      const inner = value.slice(1, -1).trim();
-      if (!inner) return [];
-      return inner.split(",").map(s => s.trim().replace(/^['"]|['"]$/g, ""));
-    }
-    if (value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1);
-    if (value.startsWith('"') && value.endsWith('"')) return value.slice(1, -1);
-    if (value === "true") return true;
-    if (value === "false") return false;
-    if (/^-?\d+$/.test(value)) return Number(value);
-    return value;
   }
 
   private extractTitle(fm: Record<string, unknown>, body: string): string {
     if (fm.title) {
+      if (typeof fm.title === "string") return fm.title;
       const t = fm.title as Record<string, unknown>;
       return (t.romaji as string) || (t.english as string) || (t.native as string) || String(fm.anilistId);
     }
@@ -802,8 +806,8 @@ export class VaultContext {
     // Heading index: find the best heading match for any word in the query
     const queryWords = query.toLowerCase().trim().split(/[\s,.\-!?()]+/).filter(w => w.length > 2);
     const entityCandidates = extractEntityCandidates(query);
+    const headingHits: VaultSearchResult[] = [];
     if (queryWords.length > 0) {
-      const headingHits: VaultSearchResult[] = [];
       const seenIds = new Set<string>();
       const headingScores = new Map<string, { score: number; heading: string; field: string }>();
 
@@ -832,7 +836,7 @@ export class VaultContext {
       }
 
       for (const [nodeId, info] of headingScores) {
-        const node = this.nodes.find((n) => n.id === nodeId);
+        const node = this.index.getNodeById(nodeId);
         if (!node) continue;
         seenIds.add(node.id);
         headingHits.push({ node, score: info.score, matchedField: info.field, matchedHeading: info.heading });
@@ -843,18 +847,16 @@ export class VaultContext {
         for (const id of ids) {
           if (seenIds.has(id)) continue;
           seenIds.add(id);
-          // Calculate match quality: prefer whole-word matches over substring matches
-          const node = this.nodes.find(n => n.id === id);
+          const node = this.index.getNodeById(id);
           if (!node) continue;
-          // Find the exact heading that matched for score quality
           const nodeHeadings = this.index.findHeading(word);
           const matchesWell = nodeHeadings.some(hid => hid === id);
           headingHits.push({ node, score: matchesWell ? 95 : 85, matchedField: `heading:${word}`, matchedHeading: word });
         }
       }
+
+      // Link graph: also include files linked from matched files
       if (headingHits.length > 0) {
-        headingHits.sort((a, b) => b.score - a.score);
-        // Link graph: also include files linked from matched files
         const linkedIds = new Set<string>();
         for (const h of headingHits) {
           for (const linked of this.index.findLinks(h.node.id)) {
@@ -866,15 +868,32 @@ export class VaultContext {
           }
         }
         for (const id of linkedIds) {
-          const node = this.nodes.find(n => n.id === id);
+          const node = this.index.getNodeById(id);
           if (node) headingHits.push({ node, score: 65, matchedField: `link:${queryWords[0]}`, matchedHeading: queryWords[0] });
         }
-        return headingHits.slice(0, 10);
+      }
+    }
+
+    // Merge heading hits with main search results (heading hits get a boost)
+    let allResults = [...results];
+    if (headingHits.length > 0) {
+      const existingIds = new Set(results.map(r => r.node.id));
+      for (const hit of headingHits) {
+        if (existingIds.has(hit.node.id)) {
+          // Boost existing result
+          const existing = allResults.find(r => r.node.id === hit.node.id);
+          if (existing) {
+            existing.score = Math.max(existing.score, hit.score);
+            if (hit.matchedHeading) existing.matchedHeading = hit.matchedHeading;
+          }
+        } else {
+          allResults.push(hit);
+        }
       }
     }
 
     // Metadata filter: detect type-specific and structured queries
-    let filteredResults = results.filter(r => {
+    let filteredResults = allResults.filter(r => {
       if (!constraints.typeFilter) return true;
       const nodeType = String(r.node.frontmatter.type ?? "").toLowerCase();
       const mediaType = String(r.node.frontmatter.mediaType ?? "").toLowerCase();
@@ -938,7 +957,7 @@ export class VaultContext {
       }
     }
 
-    return filteredResults.length > 0 ? filteredResults : results;
+    return filteredResults.length > 0 ? filteredResults : allResults;
   }
 
   getAllMedia(): VaultNode[] { return this.nodes.filter((n) => n.type === "anime" || n.type === "manga"); }
@@ -951,16 +970,21 @@ export class VaultContext {
 
   buildPromptContext(results: VaultSearchResult[], mode: QueryMode = "entity"): string {
     if (results.length === 0) return "No matching data found in your AniList library.";
-    const parts = [
-      mode === "report"
-        ? "The following data is from the user's synced AniList library (vault). Build a structured, comprehensive answer only from this information. Aggregate across results when needed."
-        : mode === "summary"
-          ? "The following data is from the user's synced AniList library (vault). Give a concise but complete answer using only this information."
-          : "The following data is from the user's synced AniList library (vault). Answer ONLY from this information. Do not say you can only answer from this information - just answer directly.",
-      "---",
-    ];
 
+    // Token budget: ~4 chars per token, cap at ~6000 tokens for context safety
+    const MAX_CHARS = 24000;
+    let totalChars = 0;
+
+    const header = mode === "report"
+      ? "The following data is from the user's synced AniList library (vault). Build a structured, comprehensive answer only from this information. Aggregate across results when needed."
+      : mode === "summary"
+        ? "The following data is from the user's synced AniList library (vault). Give a concise but complete answer using only this information."
+        : "The following data is from the user's synced AniList library (vault). Answer ONLY from this information. Do not say you can only answer from this information - just answer directly.";
+    totalChars += header.length + 5; // +5 for "---\n"
+
+    const parts = [header, "---"];
     const limit = mode === "report" ? 15 : mode === "summary" ? 8 : 10;
+
     for (const r of results.slice(0, limit)) {
       const n = r.node;
       const lines: string[] = [];
@@ -988,7 +1012,10 @@ export class VaultContext {
       }
 
       lines.push(`  Matched via: ${r.matchedField} (score: ${r.score.toFixed(1)})`);
-      parts.push(lines.join("\n"));
+      const entry = lines.join("\n");
+      totalChars += entry.length + 5; // +5 for "---\n"
+      if (totalChars > MAX_CHARS) break;
+      parts.push(entry);
       parts.push("---");
     }
     return parts.join("\n");

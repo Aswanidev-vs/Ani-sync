@@ -12,6 +12,20 @@ export function slugify(input: string): string {
     .trim();
 }
 
+export function slugifyTag(input: string): string {
+  return input
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+    .replace(/ /g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 120)
+    .trim();
+}
+
 export function slugifyAnchor(name: string): string {
   return name
     .toLowerCase()

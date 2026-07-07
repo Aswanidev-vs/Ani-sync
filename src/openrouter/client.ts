@@ -94,11 +94,10 @@ export async function sendChatStream(
   model: string,
   messages: OpenRouterMessage[],
   onToken: (token: string) => void,
+  signal?: AbortSignal,
 ): Promise<string> {
-  const response: RequestUrlResponse = await requestUrl({
-    url: CHAT_URL,
+  const response = await fetch(CHAT_URL, {
     method: "POST",
-    throw: false,
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
@@ -111,35 +110,50 @@ export async function sendChatStream(
       temperature: 0.3,
       max_tokens: 2048,
     }),
+    signal,
   });
 
-  if (response.status !== 200) {
+  if (!response.ok) {
     let errorMsg = `OpenRouter returned HTTP ${response.status}`;
     try {
-      const errBody = typeof response.json === "object" ? response.json : JSON.parse(response.text);
+      const errBody = await response.json();
       if (errBody?.error?.message) errorMsg = errBody.error.message;
       else if (errBody?.error) errorMsg = JSON.stringify(errBody.error);
     } catch { /* ignore */ }
     throw new Error(errorMsg);
   }
 
-  const text = response.text;
-  let fullContent = "";
+  if (!response.body) {
+    throw new Error("OpenRouter did not return a response body.");
+  }
 
-  const lines = text.split("\n");
-  for (const line of lines) {
-    if (!line.startsWith("data: ")) continue;
-    const data = line.slice(6).trim();
-    if (data === "[DONE]") break;
-    try {
-      const chunk = JSON.parse(data);
-      const token = chunk.choices?.[0]?.delta?.content ?? "";
-      if (token) {
-        fullContent += token;
-        onToken(token);
+  let fullContent = "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() ?? "";
+
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const data = line.slice(6).trim();
+      if (data === "[DONE]") return fullContent;
+      try {
+        const chunk = JSON.parse(data);
+        const token = chunk.choices?.[0]?.delta?.content ?? "";
+        if (token) {
+          fullContent += token;
+          onToken(token);
+        }
+      } catch {
+        // skip malformed chunks
       }
-    } catch {
-      // skip malformed chunks
     }
   }
 

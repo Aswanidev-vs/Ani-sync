@@ -27,7 +27,7 @@ jobs:
       - name: Run opencode for auto-fix
         uses: anomalyco/opencode/github@latest
         env:
-          _GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           model: github-models/microsoft/mai-ds-r1
           prompt: |

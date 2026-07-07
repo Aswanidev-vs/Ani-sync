@@ -1,4 +1,4 @@
-import { slugify, slugifyAnchor, pickTitle } from "./slugify";
+import { slugify, slugifyTag, slugifyAnchor, pickTitle } from "./slugify";
 import type {
   AnilistCharacterEdge,
   AnilistRelationEdge,
@@ -600,7 +600,7 @@ export function buildMediaArtifact(note: MediaNote, titleSlug: string, syncedAt:
   if (note.genres.length) {
     body.push("## Genres");
     body.push("");
-    for (const g of note.genres) body.push(`- [[Tags/${slugify(g)}|${g}]]`);
+    for (const g of note.genres) body.push(`- [[Tags/${slugifyTag(g)}|${g}]]`);
     body.push("");
   }
   if (note.tags.length) {
@@ -608,7 +608,7 @@ export function buildMediaArtifact(note: MediaNote, titleSlug: string, syncedAt:
     body.push("");
     for (const t of note.tags) {
       const pct = t.rank != null ? ` (${t.rank}%)` : "";
-      body.push(`- [[Tags/${slugify(t.name)}|${t.name}]]${pct}`);
+      body.push(`- [[Tags/${slugifyTag(t.name)}|${t.name}]]${pct}`);
     }
     body.push("");
   }
@@ -702,7 +702,7 @@ export function buildTagArtifact(tag: TagArtifactData, syncedAt: string): NoteAr
   if (tag.rank != null) body.push(`**AniList rank:** ${tag.rank}%  `);
   return {
     folder: "Tags",
-    filename: `${slugify(tag.name)}.md`,
+    filename: `${slugifyTag(tag.name)}.md`,
     body: renderFrontmatter(fm) + "\n" + body.join("\n"),
     uniqueKey: `tag:${tag.id}`,
   };

@@ -30,7 +30,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         with:
-          model: openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
+          model: nvidia/nemotron-3-ultra-550b-a55b:free
           prompt: |
             This pull request needs to be fixed. Do the following:
 
@@ -70,4 +70,4 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         with:
-          model: openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
+          model: nvidia/nemotron-3-ultra-550b-a55b:free

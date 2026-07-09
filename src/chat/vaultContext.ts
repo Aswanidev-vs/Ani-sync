@@ -674,17 +674,6 @@ class SearchIndex {
             if (s > score) { score = s; matchedField = `subseq:${f.f}`; }
             break;
           }
-          // Check if query matches a word prefix (e.g., "eren" matches "Eren")
-          const words = f.text.split(/[\s\-_]+/);
-          for (const word of words) {
-            if (word.startsWith(q) || q.startsWith(word)) {
-              const s = f.w * 0.6;
-              if (s > score) { score = s; matchedField = `subseq:${f.f}`; }
-              break;
-            }
-          }
-          if (score >= 15) break;
-        }
       }
 
       if (score > 0) scored.push({ entry, score, matchedField });

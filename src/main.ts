@@ -5,6 +5,7 @@ import { AnisyncSettingTab } from "./settingsTab";
 import { AnilistClient } from "./anilist/client";
 import { SyncEngine, VaultAdapter, CacheStore } from "./sync/engine";
 import { AnisyncCache, emptyCache } from "./sync/cache";
+import { slugifyTag } from "./notes/slugify";
 import {
   openAuthorizePopup,
   handleDeepLinkToken,
@@ -165,6 +166,67 @@ export default class AnisyncPlugin extends Plugin {
 
     if (this.settings.enableAutoSync && this.canSync()) {
       this.startAutoSync();
+    }
+
+    void this.fixTagWikiLinks();
+  }
+
+  private async fixTagWikiLinks(): Promise<void> {
+    // Step 1: Rename tag files from Title Case (e.g. "Super Power.md") to lowercase-hyphen (e.g. "super-power.md")
+    const tagFolder = this.app.vault.getMarkdownFiles().filter(f => f.path.startsWith("Tags/"));
+    let renamedCount = 0;
+    for (const file of tagFolder) {
+      const basename = file.basename;
+      const correctName = slugifyTag(basename);
+      if (correctName !== basename) {
+        const newPath = `Tags/${correctName}.md`;
+        try {
+          const existing = this.app.vault.getAbstractFileByPath(newPath);
+          if (!existing) {
+            const content = await this.app.vault.read(file);
+            await this.app.vault.create(newPath, content);
+            await this.app.vault.delete(file);
+            renamedCount++;
+          } else {
+            // Target already exists, just delete the old one
+            await this.app.vault.delete(file);
+            renamedCount++;
+          }
+        } catch (e) {
+          console.error(`[Ani-sync] Failed to rename tag file: ${basename}`, e);
+        }
+      }
+    }
+    if (renamedCount > 0) {
+      console.log(`[Ani-sync] Renamed ${renamedCount} tag files to lowercase-hyphen`);
+    }
+
+    // Step 2: Fix wiki-links in media notes that reference Tags/ with incorrect slug format
+    const folders = ["Anime", "Manga"];
+    let fixedCount = 0;
+    for (const folder of folders) {
+      const files = this.app.vault.getMarkdownFiles().filter(f => f.path.startsWith(`${folder}/`));
+      for (const file of files) {
+        let content = await this.app.vault.read(file);
+        // Match any wiki-link to Tags/ folder
+        const regex = /\[\[Tags\/([^|\]]+)\|([^\]]+)\]\]/g;
+        let changed = false;
+        content = content.replace(regex, (match, slug: string, display: string) => {
+          const correctSlug = slugifyTag(display);
+          if (correctSlug !== slug) {
+            changed = true;
+            return `[[Tags/${correctSlug}|${display}]]`;
+          }
+          return match;
+        });
+        if (changed) {
+          await this.app.vault.modify(file, content);
+          fixedCount++;
+        }
+      }
+    }
+    if (fixedCount > 0) {
+      console.log(`[Ani-sync] Fixed tag wiki-links in ${fixedCount} files`);
     }
   }
 

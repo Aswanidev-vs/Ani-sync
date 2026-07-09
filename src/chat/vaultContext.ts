@@ -476,7 +476,7 @@ class SearchIndex {
     const wordBoundaryIds = new Set<string>();
     const substringIds = new Set<string>();
     for (const [heading, ids] of this.headingIndex) {
-      if (heading === q || heading.startsWith(q + " ") || heading.startsWith(q + ",") || heading.includes(" " + q) || heading.includes(" " + q + ",") || heading.includes(" " + q + "'") || heading.includes(" " + q + "-")) {
+      if (heading === q || heading.startsWith(q + " ") || heading.startsWith(q + ",") || heading.includes(" " + q) || heading.includes(" " + q + ",") || heading.includes(" " + q + "'")) {
         for (const id of ids) wordBoundaryIds.add(id);
       } else if (heading.includes(q) && q.length >= 3) {
         for (const id of ids) substringIds.add(id);

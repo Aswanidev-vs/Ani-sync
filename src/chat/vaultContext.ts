@@ -712,8 +712,8 @@ class SearchIndex {
       return { node: s.entry.node, score: s.score, matchedField: s.matchedField, matchedHeading, matchedSection };
     });
   }
+ }
 }
-
 export class VaultContext {
   private app: App;
   private basePath: string;

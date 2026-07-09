@@ -714,7 +714,6 @@ class SearchIndex {
     });
   }
  }
-}
 export class VaultContext {
   private app: App;
   private basePath: string;

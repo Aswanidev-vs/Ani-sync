@@ -53,6 +53,13 @@ const QUERY_STOP_WORDS = new Set([
   "or", "please", "by", "series",
 ]);
 
+// Stop words excluded from indexing to improve IDF discriminative power
+const INDEX_STOP_WORDS = new Set([
+  "the", "a", "an", "of", "in", "on", "at", "to", "from", "for", "and", "or",
+  "is", "was", "are", "were", "do", "does", "did", "has", "have", "had",
+  "it", "its", "this", "that", "with", "by", "as", "but", "not", "be",
+]);
+
 function buildTrigrams(text: string): Set<string> {
   const trigrams = new Set<string>();
   const lower = text.toLowerCase();
@@ -274,6 +281,7 @@ class SearchIndex {
   private df = new Map<string, number>();
   private totalDocs = 0;
   private avgDl = 1;
+  private avgTitleLength = 1;
   // Heading index: lowercase heading → list of node ids
   private headingIndex = new Map<string, string[]>();
   // Link graph: node id → outgoing wikilinks
@@ -282,6 +290,9 @@ class SearchIndex {
   private metaIndex = new Map<string, Map<string, Set<string>>>();
   // Node lookup map for O(1) access
   private nodeMap = new Map<string, VaultNode>();
+  // Title and path lookup maps for O(1) link graph resolution
+  private titleMap = new Map<string, VaultNode>();
+  private pathMap = new Map<string, VaultNode>();
 
   build(nodes: VaultNode[]): void {
     this.entries = [];
@@ -290,9 +301,11 @@ class SearchIndex {
     this.linkGraph.clear();
     this.metaIndex.clear();
     this.nodeMap.clear();
+    this.titleMap.clear();
+    this.pathMap.clear();
     this.totalDocs = nodes.length;
 
-    // Pre-compute token frequencies for IDF
+    // Pre-compute token frequencies for IDF (excluding stop words)
     const tokenDocCount = new Map<string, number>();
 
     for (const node of nodes) {
@@ -303,14 +316,19 @@ class SearchIndex {
       const titleFreq = new Map<string, number>();
       const bodyFreq = new Map<string, number>();
       for (const t of titleTokens) titleFreq.set(t, (titleFreq.get(t) ?? 0) + 1);
-      for (const t of bodyTokens) bodyFreq.set(t, (bodyFreq.get(t) ?? 0) + 1);
+      for (const t of bodyTokens) {
+        if (!INDEX_STOP_WORDS.has(t)) {
+          bodyFreq.set(t, (bodyFreq.get(t) ?? 0) + 1);
+        }
+      }
 
       const titleTrigrams = buildTrigrams(titleStr);
       const bodyTrigrams = buildTrigrams(node.body);
       const aliases = extractAliases(node);
       const aliasTokens = aliases.map((alias) => tokenize(alias));
 
-      const allTokens = new Set([...titleTokens, ...bodyTokens]);
+      // Only count non-stop-word tokens for IDF
+      const allTokens = new Set([...titleTokens, ...bodyTokens.filter(t => !INDEX_STOP_WORDS.has(t))]);
       for (const token of allTokens) {
         tokenDocCount.set(token, (tokenDocCount.get(token) ?? 0) + 1);
       }
@@ -367,8 +385,8 @@ class SearchIndex {
       if (Array.isArray(node.frontmatter.genres)) {
         for (const g of node.frontmatter.genres) metaFields.push(["genre", String(g).toLowerCase()]);
       }
-      if (Array.isArray(node.frontmatter.tags)) {
-        for (const t of node.frontmatter.tags) metaFields.push(["tag", String(t).toLowerCase()]);
+      if (Array.isArray(node.frontmatter.animeTags)) {
+        for (const t of node.frontmatter.animeTags) metaFields.push(["tag", String(t).toLowerCase()]);
       }
       for (const [field, value] of metaFields) {
         if (!this.metaIndex.has(field)) this.metaIndex.set(field, new Map());
@@ -387,10 +405,13 @@ class SearchIndex {
 
     this.df = tokenDocCount;
 
-    // Pre-compute average document length and node map
+    // Pre-compute average document length, title length, and node maps
     this.avgDl = this.totalDocs > 0 ? this.entries.reduce((s, e) => s + e.totalTokens, 0) / this.totalDocs : 1;
+    this.avgTitleLength = this.totalDocs > 0 ? this.entries.reduce((s, e) => s + e.titleTokens.length, 0) / this.totalDocs : 1;
     for (const entry of this.entries) {
       this.nodeMap.set(entry.node.id, entry.node);
+      this.titleMap.set(entry.node.title.toLowerCase(), entry.node);
+      this.pathMap.set(entry.node.path.toLowerCase(), entry.node);
     }
   }
 
@@ -471,6 +492,14 @@ class SearchIndex {
     return this.nodeMap.get(id);
   }
 
+  getNodeByTitle(title: string): VaultNode | undefined {
+    return this.titleMap.get(title.toLowerCase());
+  }
+
+  getNodeByPath(path: string): VaultNode | undefined {
+    return this.pathMap.get(path.toLowerCase());
+  }
+
   metaFilter(field: string, value: string): Set<string> {
     return this.metaIndex.get(field)?.get(value.toLowerCase()) ?? new Set();
   }
@@ -481,8 +510,9 @@ class SearchIndex {
     const needle = value.toLowerCase();
     const out = new Set<string>();
     for (const [candidate, ids] of fieldMap) {
-      // Only forward match (candidate contains needle) to avoid false positives on short values
-      if (candidate.includes(needle)) {
+      // Word-boundary matching: needle must match as a complete word/phrase
+      const parts = candidate.split(/[\s,]+/);
+      if (parts.some(part => part === needle) || candidate === needle) {
         for (const id of ids) out.add(id);
       }
     }
@@ -502,7 +532,7 @@ class SearchIndex {
       const tfBody = entry.bodyFreq.get(term) ?? 0;
       const idf = this.idf(term);
       if (idf === 0) continue;
-      const titleScore = (tfTitle * (k1 + 1)) / (tfTitle + k1 * (1 - b + b * (entry.titleTokens.length / (this.avgDl || 1))));
+      const titleScore = (tfTitle * (k1 + 1)) / (tfTitle + k1 * (1 - b + b * (entry.titleTokens.length / (this.avgTitleLength || 1))));
       const bodyScore = (tfBody * (k1 + 1)) / (tfBody + k1 * (1 - b + b * (entry.totalTokens / (this.avgDl || 1))));
       score += idf * (titleScore * 3 + bodyScore);
     }
@@ -635,9 +665,22 @@ class SearchIndex {
         ];
         for (const f of fields) {
           if (!f.text) continue;
-          let tI = 0, qI = 0;
-          while (tI < f.text.length && qI < q.length) { if (f.text[tI] === q[qI]) qI++; tI++; }
-          if (qI === q.length) { const s = f.w * 0.6; if (s > score) { score = s; matchedField = f.f; } }
+          // Check for substring match first (most reliable)
+          if (f.text.includes(q)) {
+            const s = f.w * 0.8;
+            if (s > score) { score = s; matchedField = `subseq:${f.f}`; }
+            break;
+          }
+          // Check if query matches a word prefix (e.g., "eren" matches "Eren")
+          const words = f.text.split(/[\s\-_]+/);
+          for (const word of words) {
+            if (word.startsWith(q) || q.startsWith(word)) {
+              const s = f.w * 0.6;
+              if (s > score) { score = s; matchedField = `subseq:${f.f}`; }
+              break;
+            }
+          }
+          if (score >= 15) break;
         }
       }
 
@@ -860,10 +903,8 @@ export class VaultContext {
         const linkedIds = new Set<string>();
         for (const h of headingHits) {
           for (const linked of this.index.findLinks(h.node.id)) {
-            const linkedNode = this.nodes.find(n =>
-              n.title.toLowerCase().includes(linked.toLowerCase()) ||
-              n.path.toLowerCase().includes(linked.toLowerCase())
-            );
+            // O(1) lookup via titleMap/pathMap instead of O(N) linear scan
+            const linkedNode = this.index.getNodeByTitle(linked) ?? this.index.getNodeByPath(linked);
             if (linkedNode && !headingHits.some(hh => hh.node.id === linkedNode.id)) linkedIds.add(linkedNode.id);
           }
         }
@@ -999,7 +1040,7 @@ export class VaultContext {
       if (n.frontmatter.duration) lines.push(`  Duration: ${n.frontmatter.duration} min`);
       if (n.frontmatter.genres) lines.push(`  Genres: ${Array.isArray(n.frontmatter.genres) ? n.frontmatter.genres.join(", ") : n.frontmatter.genres}`);
       if (n.frontmatter.language) lines.push(`  Language: ${n.frontmatter.language}`);
-      if (n.frontmatter.tags && Array.isArray(n.frontmatter.tags)) lines.push(`  Tags: ${n.frontmatter.tags.join(", ")}`);
+      if (n.frontmatter.animeTags && Array.isArray(n.frontmatter.animeTags)) lines.push(`  Tags: ${n.frontmatter.animeTags.join(", ")}`);
       if (n.frontmatter.listName) lines.push(`  List: ${n.frontmatter.listName}`);
       if (n.frontmatter.progress != null) lines.push(`  Progress: ${n.frontmatter.progress}`);
       if (n.frontmatter.anilistUrl) lines.push(`  URL: ${n.frontmatter.anilistUrl}`);
@@ -1011,7 +1052,6 @@ export class VaultContext {
         lines.push(`  ${trimmed}`);
       }
 
-      lines.push(`  Matched via: ${r.matchedField} (score: ${r.score.toFixed(1)})`);
       const entry = lines.join("\n");
       totalChars += entry.length + 5; // +5 for "---\n"
       if (totalChars > MAX_CHARS) break;
@@ -1131,29 +1171,4 @@ export class VaultContext {
     const prelude = lines.slice(0, Math.min(lines.length, 10)).filter((line) => line.startsWith("# ") || line.startsWith("**Status:**") || line.startsWith("**Score:**"));
     return [...prelude, "", ...lines.slice(start, end)];
   }
-}
-
-export function fuzzyScore(target: string, query: string): number {
-  const t = target.toLowerCase();
-  const q = query.toLowerCase();
-  if (t === q) return 1.0;
-  if (t.includes(q)) return 0.8 + (q.length / t.length) * 0.15;
-  let tIdx = 0, qIdx = 0;
-  while (tIdx < t.length && qIdx < q.length) { if (t[tIdx] === q[qIdx]) qIdx++; tIdx++; }
-  if (qIdx === q.length) return 0.6;
-  return 0;
-}
-
-export function levenshteinDistance(a: string, b: string): number {
-  const matrix = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
-  for (let i = 0; i <= a.length; i++) matrix[i][0] = i;
-  for (let j = 0; j <= b.length; j++) matrix[0][j] = j;
-  for (let i = 1; i <= a.length; i++) {
-    for (let j = 1; j <= b.length; j++) {
-      matrix[i][j] = a[i - 1] === b[j - 1]
-        ? matrix[i - 1][j - 1]
-        : Math.min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j - 1] + 1);
-    }
-  }
-  return matrix[a.length][b.length];
 }

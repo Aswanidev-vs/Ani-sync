@@ -3,6 +3,8 @@ function normalizeInput(input: string): string {
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "")
+    .replace(/['.&,!\u2018\u2019\u201c\u201d()[\]]/g, "")
+    .replace(/\u2013|\u2014/g, "-")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -21,8 +23,8 @@ export function slugifyTag(input: string): string {
     .toLowerCase()
     .replace(/ /g, "-")
     .replace(/-+/g, "-")
-    .slice(0, 120)
-    .replace(/^-|-$/g, "");
+    .replace(/^-|-$/g, "")
+    .slice(0, 120);
 }
 
 export function slugifyAnchor(name: string): string {

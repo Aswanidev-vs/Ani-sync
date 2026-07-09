@@ -411,7 +411,10 @@ class SearchIndex {
     for (const entry of this.entries) {
       this.nodeMap.set(entry.node.id, entry.node);
       this.titleMap.set(entry.node.title.toLowerCase(), entry.node);
-      this.pathMap.set(entry.node.path.toLowerCase(), entry.node);
+      const cleanPath = entry.node.path.toLowerCase().endsWith(".md")
+        ? entry.node.path.toLowerCase().slice(0, -3)
+        : entry.node.path.toLowerCase();
+      this.pathMap.set(cleanPath, entry.node);
     }
   }
 

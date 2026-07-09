@@ -46,6 +46,33 @@ export interface AnilistStaffEdge {
   };
 }
 
+export interface AnilistCharacterEdge {
+  role: string;
+  voiceActors?: AnilistVoiceActor[] | null;
+  node: {
+    id: number;
+    name: { full?: string | null; native?: string | null };
+    image?: { large?: string | null; medium?: string | null } | null;
+    description?: string | null;
+    siteUrl?: string | null;
+    gender?: string | null;
+    age?: string | null;
+    dateOfBirth?: { year?: number | null; month?: number | null; day?: number | null } | null;
+  };
+}
+
+export interface AnilistCharacterConnection {
+  pageInfo?: { hasNextPage: boolean } | null;
+  edges?: AnilistCharacterEdge[] | null;
+}
+
+export interface AnilistVoiceActor {
+  id: number;
+  name: { full?: string | null; native?: string | null };
+  language?: string | null;
+  image?: { large?: string | null; medium?: string | null } | null;
+}
+
 export interface AnilistRelationEdge {
   relationType: string;
   node: {
@@ -79,6 +106,7 @@ export interface MediaDetail {
   studios?: { edges?: AnilistStudioEdge[] | null } | null;
   staff?: { edges?: AnilistStaffEdge[] | null } | null;
   relations?: { edges?: AnilistRelationEdge[] | null } | null;
+  characters?: AnilistCharacterConnection | null;
 }
 
 export interface MediaListEntry {

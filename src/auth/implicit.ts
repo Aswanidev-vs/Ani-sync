@@ -28,7 +28,7 @@ export async function handleDeepLinkToken(plugin: AnisyncPlugin, token: string):
   }
 }
 
-export async function disconnectAnilist(plugin: AnisyncPlugin): Promise<void> {
+export async function clearAnilistCredentials(plugin: AnisyncPlugin): Promise<void> {
   plugin.stopAutoSync();
   plugin.settings.anilistToken = "";
   plugin.settings.anilistUsername = "";
@@ -45,7 +45,7 @@ export async function probeAnilistConnection(plugin: AnisyncPlugin): Promise<voi
   } catch (e) {
     const status = (e as Error & { status?: number })?.status;
     if (status === 401 || status === 403) {
-      await disconnectAnilist(plugin);
+      await clearAnilistCredentials(plugin);
       plugin.refreshSettingsTab();
     }
     const msg = (e as Error)?.message ?? String(e);

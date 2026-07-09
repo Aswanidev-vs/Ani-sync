@@ -1,13 +1,20 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
-import type AnisyncPlugin from "./main";
+import AnisyncPlugin, { ClearCacheConfirmModal, SyncLogEntry } from "./main";
 import { fetchModels } from "./openrouter/client";
+
+type LogLevel = "info" | "success" | "warn" | "error";
 
 export class AnisyncSettingTab extends PluginSettingTab {
   private plugin: AnisyncPlugin;
+  private logCleanup?: () => void;
 
   constructor(app: App, plugin: AnisyncPlugin) {
     super(app, plugin);
     this.plugin = plugin;
+  }
+
+  hide(): void {
+    this.logCleanup?.();
   }
 
   display(): void {
@@ -20,20 +27,35 @@ export class AnisyncSettingTab extends PluginSettingTab {
       cls: "setting-item-description",
     });
 
-    this.renderOAuthSection(containerEl);
-    this.renderSyncSection(containerEl);
-    this.renderSyncSettingsSection(containerEl);
-    this.renderOpenRouterSection(containerEl);
-    this.renderActionsSection(containerEl);
+    this.safeRender("OAuth", () => this.renderOAuthSection(containerEl));
+    this.safeRender("Sync", () => this.renderSyncSection(containerEl));
+    this.safeRender("SyncSettings", () => this.renderSyncSettingsSection(containerEl));
+    this.safeRender("OpenRouter", () => this.renderOpenRouterSection(containerEl));
+    this.safeRender("GraphColors", () => this.renderGraphColorsSection(containerEl));
+    this.safeRender("Actions", () => this.renderActionsSection(containerEl));
+  }
+
+  private safeRender(name: string, fn: () => void): void {
+    try {
+      fn();
+    } catch (e) {
+      console.error(`Ani-sync: ${name} section render failed`, e);
+    }
   }
 
   private renderOAuthSection(containerEl: HTMLElement): void {
     const s = this.plugin.settings;
     const hasToken = !!s.anilistToken;
 
-    containerEl.createEl("h3", { text: "AniList Connection" });
+    const section = containerEl.createDiv({ cls: "anisync-openrouter-panel" });
+    const hero = section.createDiv({ cls: "anisync-openrouter-hero" });
+    hero.createDiv({ cls: "anisync-openrouter-kicker", text: "Authentication" });
+    hero.createEl("h3", { text: "AniList Connection" });
+    hero.createEl("p", {
+      text: "Link your AniList account to sync anime and manga lists into your vault.",
+    });
 
-    const card = containerEl.createDiv({ cls: "anisync-status-card" });
+    const card = section.createDiv({ cls: "anisync-status-card" });
     const row = card.createDiv({ cls: "anisync-status-row" });
     row.createDiv({ cls: hasToken ? "anisync-indicator anisync-indicator-ok" : "anisync-indicator anisync-indicator-warn" });
     const text = row.createSpan({ cls: "anisync-status-text" });
@@ -53,12 +75,18 @@ export class AnisyncSettingTab extends PluginSettingTab {
   private renderSyncSection(containerEl: HTMLElement): void {
     const s = this.plugin.settings;
 
-    containerEl.createEl("h3", { text: "Sync" });
+    const section = containerEl.createDiv({ cls: "anisync-openrouter-panel" });
+    const hero = section.createDiv({ cls: "anisync-openrouter-hero" });
+    hero.createDiv({ cls: "anisync-openrouter-kicker", text: "Sync Status" });
+    hero.createEl("h3", { text: "Sync" });
+    hero.createEl("p", {
+      text: "Monitor sync status and manage your AniList connection.",
+    });
 
     if (s.lastSyncAt) {
       const dt = new Date(s.lastSyncAt);
       const ago = this.getTimeAgo(dt);
-      const el = containerEl.createDiv({ cls: "anisync-last-sync" });
+      const el = section.createDiv({ cls: "anisync-last-sync" });
       el.createSpan({ cls: "anisync-last-sync-label" }).setText("Last sync: ");
       el.createSpan({ cls: "anisync-last-sync-time" }).setText(ago + " ago");
       if (s.lastSyncStats) {
@@ -67,7 +95,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
     }
 
     if (s.anilistToken) {
-      new Setting(containerEl)
+      new Setting(section)
         .setName("AniList username")
         .setDesc("Auto-detected from your AniList account.")
         .addText((text) =>
@@ -78,7 +106,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
     }
 
     if (!s.anilistToken) {
-      new Setting(containerEl)
+      new Setting(section)
         .setName("Connect to AniList")
         .setDesc("Opens AniList authorization page. After approving, connection is established automatically.")
         .addButton((btn) =>
@@ -91,27 +119,38 @@ export class AnisyncSettingTab extends PluginSettingTab {
             }),
         );
     } else {
-      new Setting(containerEl)
+      new Setting(section)
         .setName("Disconnect")
         .setDesc("Remove your AniList connection.")
         .addButton((btn) =>
           btn
             .setButtonText("Disconnect")
-            .setDestructive()
-            .onClick(async () => {
-              await this.plugin.disconnectAnilist();
-              this.plugin.refreshSettingsTab();
-              new Notice("Disconnected from AniList.", 3000);
+            .onClick(() => {
+              void this.plugin.disconnectAnilist().then(() => {
+                new Notice("Disconnected from AniList.", 3000);
+              }).catch((e) => {
+                const msg = e?.message ?? String(e);
+                new Notice(`Disconnect failed: ${msg}`, 6000);
+              }).finally(() => {
+                this.plugin.refreshSettingsTab();
+              });
             }),
         );
     }
-
   }
 
   private renderSyncSettingsSection(containerEl: HTMLElement): void {
     const s = this.plugin.settings;
 
-    new Setting(containerEl)
+    const section = containerEl.createDiv({ cls: "anisync-openrouter-panel" });
+    const hero = section.createDiv({ cls: "anisync-openrouter-hero" });
+    hero.createDiv({ cls: "anisync-openrouter-kicker", text: "Configuration" });
+    hero.createEl("h3", { text: "Sync Settings" });
+    hero.createEl("p", {
+      text: "Configure where and how often your AniList data is synced.",
+    });
+
+    new Setting(section)
       .setName("Output folder")
       .setDesc("Vault folder where notes are created.")
       .addText((text) =>
@@ -124,7 +163,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
           }),
       );
 
-    new Setting(containerEl)
+    new Setting(section)
       .setName("Auto-sync")
       .setDesc("Automatically sync at regular intervals while Obsidian is open.")
       .addToggle((toggle) =>
@@ -141,7 +180,7 @@ export class AnisyncSettingTab extends PluginSettingTab {
         }),
       );
 
-    new Setting(containerEl)
+    new Setting(section)
       .setName("Sync interval (seconds)")
       .setDesc("How often to check for updates (minimum 30 seconds).")
       .addText((text) =>
@@ -162,13 +201,15 @@ export class AnisyncSettingTab extends PluginSettingTab {
   private renderOpenRouterSection(containerEl: HTMLElement): void {
     const s = this.plugin.settings;
 
-    containerEl.createEl("h3", { text: "OpenRouter AI" });
-    containerEl.createEl("p", {
-      text: "Configure an OpenRouter API key to enable the AI chat sidebar.",
-      cls: "setting-item-description",
+    const section = containerEl.createDiv({ cls: "anisync-openrouter-panel" });
+    const hero = section.createDiv({ cls: "anisync-openrouter-hero" });
+    hero.createDiv({ cls: "anisync-openrouter-kicker", text: "AI Routing" });
+    hero.createEl("h3", { text: "OpenRouter AI" });
+    hero.createEl("p", {
+      text: "Search and pin a valid model for the current API key without fighting a cramped native dropdown.",
     });
 
-    new Setting(containerEl)
+    new Setting(section)
       .setName("API key")
       .setDesc("Your OpenRouter API key. Stored locally in your vault settings.")
       .addText((text) => {
@@ -176,39 +217,20 @@ export class AnisyncSettingTab extends PluginSettingTab {
           .setPlaceholder("sk-or-v1-...")
           .setValue(s.openrouterApiKey)
           .onChange(async (value) => {
-            s.openrouterApiKey = value;
+            const next = value.trim();
+            const apiKeyChanged = next !== s.openrouterApiKey;
+            s.openrouterApiKey = next;
+            if (apiKeyChanged) {
+              s.openrouterAvailableModels = [];
+              s.openrouterModel = "";
+            }
             await this.plugin.saveSettings();
           });
         text.inputEl.type = "password";
+        text.inputEl.addClass("anisync-openrouter-key-input");
       });
 
-    const modelSetting = new Setting(containerEl)
-      .setName("Model")
-      .setDesc("Select an OpenRouter model for chat.")
-      .addDropdown((dropdown) => {
-        const models = s.openrouterAvailableModels;
-        if (models.length > 0) {
-          for (const m of models) {
-            const label = m.isFree ? `[Free] ${m.name}` : m.name;
-            dropdown.addOption(m.id, label);
-          }
-          if (s.openrouterModel) {
-            dropdown.setValue(s.openrouterModel);
-          } else {
-            dropdown.setValue(models[0].id);
-            s.openrouterModel = models[0].id;
-          }
-        } else {
-          dropdown.addOption("", "No models — fetch first");
-        }
-        dropdown.onChange(async (value) => {
-          s.openrouterModel = value;
-          await this.plugin.saveSettings();
-        });
-        return dropdown;
-      });
-
-    new Setting(containerEl)
+    new Setting(section)
       .setName("Fetch available models")
       .setDesc("Retrieve the list of models from OpenRouter. Free models are tagged.")
       .addButton((btn) =>
@@ -222,11 +244,11 @@ export class AnisyncSettingTab extends PluginSettingTab {
           try {
             const models = await fetchModels(s.openrouterApiKey);
             s.openrouterAvailableModels = models;
-            if (models.length > 0 && !s.openrouterModel) {
+            if (models.length > 0 && (!s.openrouterModel || !models.some((m) => m.id === s.openrouterModel))) {
               s.openrouterModel = models[0].id;
             }
             await this.plugin.saveSettings();
-            this.display();
+            this.plugin.refreshSettingsTab();
             new Notice(`Fetched ${models.length} models (${models.filter((m) => m.isFree).length} free).`, 4000);
           } catch (err) {
             const msg = (err as Error)?.message ?? String(err);
@@ -237,12 +259,173 @@ export class AnisyncSettingTab extends PluginSettingTab {
           }
         }),
       );
+
+    this.renderModelPicker(section);
+  }
+
+  private renderModelPicker(containerEl: HTMLElement): void {
+    const s = this.plugin.settings;
+    const card = containerEl.createDiv({ cls: "anisync-model-picker" });
+
+    const header = card.createDiv({ cls: "anisync-model-picker-header" });
+    const titleWrap = header.createDiv();
+    titleWrap.createEl("h4", { text: "Model" });
+    titleWrap.createEl("p", { text: "Search by provider, family, price tier, or context window." });
+    header.createDiv({
+      cls: "anisync-model-picker-badge",
+      text: s.openrouterAvailableModels.length > 0 ? `${s.openrouterAvailableModels.length} loaded` : "No list",
+    });
+
+    const selected = card.createDiv({ cls: "anisync-model-selected" });
+    const selectedLabel = selected.createDiv({ cls: "anisync-model-selected-label" });
+    const selectedMeta = selected.createDiv({ cls: "anisync-model-selected-meta" });
+
+    const searchWrap = card.createDiv({ cls: "anisync-model-search-wrap" });
+    const searchIcon = searchWrap.createSpan({ cls: "anisync-model-search-icon" });
+    searchIcon.innerHTML = "&#8981;";
+    const searchInput = searchWrap.createEl("input", {
+      cls: "anisync-model-search-input",
+      attr: { type: "text", placeholder: "Search models... e.g. nemotron, qwen, free, 128k" },
+    });
+
+    const list = card.createDiv({ cls: "anisync-model-list" });
+
+    const updateSelected = () => {
+      const model = s.openrouterAvailableModels.find((m) => m.id === s.openrouterModel);
+      if (!model) {
+        selected.addClass("is-empty");
+        selectedLabel.setText("No model selected");
+        selectedMeta.setText("Fetch models for this API key, then pick one route for chat.");
+        return;
+      }
+      selected.removeClass("is-empty");
+      selectedLabel.setText(model.isFree ? `[Free] ${model.name}` : model.name);
+      const provider = model.id.split("/")[0] ?? "provider";
+      const ctx = model.context_length ? `${Math.round(model.context_length / 1000)}k ctx` : "ctx unknown";
+      selectedMeta.setText(`${provider} · ${ctx} · ${model.id}`);
+    };
+
+    const renderList = async () => {
+      list.empty();
+      const q = searchInput.value.toLowerCase().trim();
+      const models = s.openrouterAvailableModels.filter((m) => {
+        if (!q) return true;
+        const hay = [
+          m.id,
+          m.name,
+          m.description ?? "",
+          m.isFree ? "free" : "paid",
+          String(m.context_length),
+          `${Math.round(m.context_length / 1000)}k`,
+        ].join(" ").toLowerCase();
+        return hay.includes(q);
+      });
+
+      if (s.openrouterAvailableModels.length === 0) {
+        const empty = list.createDiv({ cls: "anisync-model-empty" });
+        empty.createEl("strong", { text: "No models loaded" });
+        empty.createEl("span", { text: "Enter a key and fetch models first." });
+        updateSelected();
+        return;
+      }
+
+      if (models.length === 0) {
+        const empty = list.createDiv({ cls: "anisync-model-empty" });
+        empty.createEl("strong", { text: "No matches" });
+        empty.createEl("span", { text: "Try provider names, model families, or 'free'." });
+        updateSelected();
+        return;
+      }
+
+      for (const model of models.slice(0, 60)) {
+        const item = list.createDiv({ cls: "anisync-model-option" });
+        if (model.id === s.openrouterModel) item.addClass("is-selected");
+
+        const top = item.createDiv({ cls: "anisync-model-option-top" });
+        top.createSpan({ cls: "anisync-model-option-name", text: model.name });
+        top.createSpan({
+          cls: model.isFree ? "anisync-model-chip is-free" : "anisync-model-chip",
+          text: model.isFree ? "Free" : "Paid",
+        });
+
+        const meta = item.createDiv({ cls: "anisync-model-option-meta" });
+        meta.createSpan({ text: model.id });
+        meta.createSpan({ text: `${Math.round(model.context_length / 1000)}k ctx` });
+
+        if (model.description) {
+          item.createDiv({ cls: "anisync-model-option-desc", text: model.description });
+        }
+
+        item.onclick = async () => {
+          s.openrouterModel = model.id;
+          await this.plugin.saveSettings();
+          updateSelected();
+          await renderList();
+        };
+      }
+
+      updateSelected();
+    };
+
+    searchInput.addEventListener("input", () => { void renderList(); });
+    void renderList();
+  }
+
+  private renderGraphColorsSection(containerEl: HTMLElement): void {
+    const s = this.plugin.settings;
+    const colors = s.graphColors;
+    const labels: [keyof typeof colors, string, string][] = [
+      ["anime", "Anime", "#02a9ff"],
+      ["manga", "Manga", "#8b5cf6"],
+      ["staff", "Staff", "#4ade80"],
+      ["studios", "Studios", "#f59e0b"],
+      ["tags", "Tags", "#f87171"],
+      ["characters", "Characters", "#fbbf24"],
+    ];
+
+    const section = containerEl.createDiv({ cls: "anisync-openrouter-panel" });
+    const hero = section.createDiv({ cls: "anisync-openrouter-hero" });
+    hero.createDiv({ cls: "anisync-openrouter-kicker", text: "Customization" });
+    hero.createEl("h3", { text: "Graph Colors" });
+    hero.createEl("p", {
+      text: "Customise the colours used for each note type in Obsidian's graph view.",
+    });
+
+    for (const [key, label] of labels) {
+      new Setting(section)
+        .setName(label)
+        .addColorPicker((picker) =>
+          picker
+            .setValue(colors[key])
+            .onChange(async (value) => {
+              colors[key] = value;
+              await this.plugin.saveSettings();
+              await this.plugin.applyGraphColors();
+            }),
+        );
+    }
+
+    new Setting(section)
+      .setName("Apply to graph now")
+      .setDesc("Update graph.json with the colours above.")
+      .addButton((btn) =>
+        btn.setButtonText("Apply").setCta().onClick(async () => {
+          await this.plugin.applyGraphColors();
+          new Notice("Graph colours applied. Reopen the graph panel to see changes.", 6000);
+        }),
+      );
   }
 
   private renderActionsSection(containerEl: HTMLElement): void {
-    containerEl.createEl("h3", { text: "Actions" });
+    const section = containerEl.createDiv({ cls: "anisync-openrouter-panel" });
+    const hero = section.createDiv({ cls: "anisync-openrouter-hero" });
+    hero.createDiv({ cls: "anisync-openrouter-kicker", text: "Utilities" });
+    hero.createEl("h3", { text: "Actions" });
+    hero.createEl("p", {
+      text: "Manually trigger sync, clear cache, or manage plugin data.",
+    });
 
-    new Setting(containerEl)
+    new Setting(section)
       .setName("Sync now")
       .setDesc("Manually trigger a sync with AniList.")
       .addButton((btn) =>
@@ -254,19 +437,113 @@ export class AnisyncSettingTab extends PluginSettingTab {
           }),
       );
 
-    new Setting(containerEl)
+    new Setting(section)
       .setName("Clear sync cache")
       .setDesc("Force a complete re-sync by clearing all cached data.")
       .addButton((btn) =>
         btn
           .setButtonText("Clear cache")
-          .setDestructive()
-          .onClick(async () => {
-            await this.plugin.clearCache();
-            new Notice("Cache cleared. Next sync will be a full re-download.", 5000);
-            this.display();
+          .onClick(() => {
+            new ClearCacheConfirmModal(this.app, this.plugin).open();
           }),
       );
+
+    // Sync log viewer
+    const logSection = section.createDiv({ cls: "anisync-log-section" });
+    logSection.createEl("h4", { text: "Sync Log" });
+    logSection.createEl("p", {
+      text: "Recent sync activity and debug information.",
+      cls: "setting-item-description",
+    });
+
+    const logContainer = logSection.createDiv({ cls: "anisync-log-container" });
+
+    // Log level detection
+    const detectLevel = (entry: SyncLogEntry): LogLevel => {
+      const msg = entry.message.toLowerCase();
+      if (msg.startsWith("!") || msg.includes("error") || msg.includes("failed") || msg.includes("! write failed") || msg.includes("! delete failed") || msg.includes("! cleanup failed")) return "error";
+      if (msg.includes("warning") || msg.includes("warn") || msg.includes("retry")) return "warn";
+      if (msg.includes("done") || msg.includes("complete") || msg.includes("success") || msg.includes("applied")) return "success";
+      return "info";
+    };
+
+    // Toolbar with filters + action buttons
+    const toolbar = logContainer.createDiv({ cls: "anisync-log-toolbar" });
+
+    // Filter buttons
+    const filterWrap = toolbar.createDiv({ cls: "anisync-log-filter" });
+    let activeFilter: LogLevel | "all" = "all";
+    const filterBtns: Map<LogLevel | "all", HTMLButtonElement> = new Map();
+
+    const addFilterBtn = (label: string, value: LogLevel | "all") => {
+      const btn = filterWrap.createEl("button", { cls: "anisync-log-filter-btn", text: label });
+      if (value === activeFilter) btn.addClass("is-active");
+      filterBtns.set(value, btn);
+      btn.onclick = () => {
+        activeFilter = value;
+        for (const [v, b] of filterBtns) b.toggleClass("is-active", v === value);
+        renderLogEntries();
+      };
+    };
+
+    addFilterBtn("All", "all");
+    addFilterBtn("Info", "info");
+    addFilterBtn("Success", "success");
+    addFilterBtn("Warn", "warn");
+    addFilterBtn("Error", "error");
+
+    // Action buttons
+    const refreshBtn = toolbar.createEl("button", { cls: "anisync-log-btn", text: "Refresh" });
+    refreshBtn.onclick = () => { renderLogEntries(); new Notice("Log refreshed.", 1500); };
+
+    const clearBtn = toolbar.createEl("button", { cls: "anisync-log-btn", text: "Clear" });
+    clearBtn.onclick = () => { this.plugin.clearLog(); renderLogEntries(); new Notice("Log cleared.", 1500); };
+
+    const copyBtn = toolbar.createEl("button", { cls: "anisync-log-btn", text: "Copy" });
+    copyBtn.onclick = () => {
+      const entries = this.plugin.getSyncLog();
+      if (entries.length === 0) { new Notice("No logs to copy.", 3000); return; }
+      const text = entries.map((e) => `[${new Date(e.timestamp).toLocaleTimeString()}] [${detectLevel(e)}] ${e.message}`).join("\n");
+      navigator.clipboard.writeText(text).then(
+        () => new Notice("Logs copied to clipboard.", 3000),
+        () => new Notice("Failed to copy logs.", 3000),
+      );
+    };
+
+    // Log body
+    const logBody = logContainer.createDiv({ cls: "anisync-log-body" });
+
+    const renderLogEntries = () => {
+      logBody.empty();
+      const entries = this.plugin.getSyncLog();
+      const filtered = activeFilter === "all" ? entries : entries.filter((e) => detectLevel(e) === activeFilter);
+
+      if (filtered.length === 0) {
+        const empty = logBody.createDiv({ cls: "anisync-log-empty" });
+        empty.createDiv({ cls: "anisync-log-empty-icon", text: "\u{1F4DC}" });
+        empty.createDiv({ cls: "anisync-log-empty-title", text: "No log entries" });
+        empty.createDiv({ cls: "anisync-log-empty-desc", text: activeFilter === "all" ? "Run a sync to see activity here." : `No ${activeFilter} entries.` });
+        return;
+      }
+
+      for (const entry of filtered) {
+        const level = detectLevel(entry);
+        const row = logBody.createDiv({ cls: `anisync-log-entry is-${level}` });
+        row.createSpan({ cls: "anisync-log-time", text: new Date(entry.timestamp).toLocaleTimeString() });
+        row.createSpan({ cls: `anisync-log-level anisync-log-level-${level}`, text: level });
+        row.createSpan({ cls: "anisync-log-msg", text: entry.message });
+      }
+
+      logBody.scrollTop = logBody.scrollHeight;
+    };
+
+    // Initial render
+    renderLogEntries();
+
+    // Listen for log changes
+    this.logCleanup = this.plugin.onLogChange(() => {
+      renderLogEntries();
+    });
   }
 
   private getTimeAgo(date: Date): string {

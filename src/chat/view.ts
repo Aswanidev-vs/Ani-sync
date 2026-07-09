@@ -1,9 +1,13 @@
-import { ItemView, WorkspaceLeaf, MarkdownRenderer, MarkdownView } from "obsidian";
+import { ItemView, WorkspaceLeaf, MarkdownRenderer } from "obsidian";
 import type AnisyncPlugin from "../main";
 import { VaultContext } from "./vaultContext";
 import { sendChatStream } from "../openrouter/client";
+import { LOGO_DATA_URL } from "./logo";
 
 export const CHAT_VIEW_TYPE = "ani-sync-chat-view";
+
+const SEND_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>`;
+const STOP_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>`;
 
 interface StreamingMessage {
   bubbleEl: HTMLDivElement;
@@ -11,6 +15,7 @@ interface StreamingMessage {
   displayedContent: string;
   animationId: number | null;
   isComplete: boolean;
+  resolved: boolean;
   resolve: (value: void) => void;
 }
 
@@ -19,257 +24,358 @@ export class ChatView extends ItemView {
   private messagesEl!: HTMLDivElement;
   private inputEl!: HTMLTextAreaElement;
   private sendBtn!: HTMLButtonElement;
+  private newChatBtn!: HTMLButtonElement;
   private loadingEl!: HTMLDivElement;
   private currentStream: StreamingMessage | null = null;
   private vaultContext: VaultContext | null = null;
   private lastOutputDir: string = "";
+  private streamAbortController: AbortController | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: AnisyncPlugin) {
     super(leaf);
     this.plugin = plugin;
   }
 
-  getViewType(): string {
-    return CHAT_VIEW_TYPE;
-  }
-
-  getDisplayText(): string {
-    return "Ani-sync Chat";
-  }
-
-  getIcon(): string {
-    return "message-circle";
-  }
+  getViewType(): string { return CHAT_VIEW_TYPE; }
+  getDisplayText(): string { return "Ani-sync Chat"; }
+  getIcon(): string { return "message-circle"; }
 
   async onOpen(): Promise<void> {
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
     container.addClass("anisync-chat-container");
-    container.style.cssText = "display: flex; flex-direction: column; height: 100%; overflow: hidden;";
 
+    // Header bar with title + new chat button
+    const header = container.createDiv({ cls: "anisync-chat-header" });
+    const title = header.createSpan({ cls: "anisync-chat-header-title" });
+    title.textContent = "Ani-sync Chat";
+    this.newChatBtn = header.createEl("button", { cls: "anisync-chat-new-btn", title: "New chat" });
+    this.newChatBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>`;
+    this.newChatBtn.onclick = () => this.clearChat();
+
+    // Messages area
     this.messagesEl = container.createDiv({ cls: "anisync-chat-messages" });
-    this.messagesEl.style.cssText = "flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; align-content: flex-start;";
-    this.showWelcome();
 
+    // Input area
     const inputArea = container.createDiv({ cls: "anisync-chat-input-area" });
-    inputArea.style.cssText = "display: flex; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--background-modifier-border); background: var(--background-primary); flex-shrink: 0;";
-    
+
     this.inputEl = inputArea.createEl("textarea", {
       cls: "anisync-chat-input",
       attr: { placeholder: "Ask about your AniList library...", rows: "2" },
     });
-    this.inputEl.style.cssText = "flex: 1; resize: none; border: 1px solid var(--background-modifier-border); border-radius: 6px; padding: 6px 10px; font-size: 13px; background: var(--background-secondary); color: var(--text-normal); min-height: 36px;";
-    
-    this.sendBtn = inputArea.createEl("button", {
-      cls: "anisync-chat-send-btn",
-      text: "Send",
-    });
-    this.sendBtn.style.cssText = "align-self: flex-end; padding: 6px 14px; border-radius: 6px; border: none; background: var(--color-accent); color: var(--text-on-accent); font-size: 13px; font-weight: 600; cursor: pointer;";
+
+    this.sendBtn = inputArea.createEl("button", { cls: "anisync-chat-send-btn" });
+    this.updateSendButton(false);
 
     this.loadingEl = container.createDiv({ cls: "anisync-chat-loading" });
-    this.loadingEl.style.cssText = "padding: 6px 12px; font-size: 12px; color: var(--text-muted); text-align: center;";
     this.loadingEl.hide();
 
-    this.sendBtn.addEventListener("click", () => this.handleSend());
-    this.inputEl.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        this.handleSend();
+    this.sendBtn.onclick = () => {
+      if (this.currentStream) this.stopStreaming();
+      else void this.handleSend();
+    };
+    this.inputEl.onkeydown = (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); this.handleSend(); }
+    };
+
+    // Load chat history
+    const messages = this.plugin.getActiveChatMessages();
+    if (messages.length > 0) {
+      for (const msg of messages) {
+        if (msg.role === "user") {
+          this.addUserMessage(msg.content, false);
+        } else {
+          this.addAssistantMessage(msg.content, false);
+        }
       }
-    });
+      this.scrollDown();
+    } else {
+      this.showWelcome("Loading your library...");
+    }
+    this.preloadVaultContext();
+  }
+
+  private async preloadVaultContext(): Promise<void> {
+    const outputDir = this.plugin.settings.outputDir;
+    if (!this.vaultContext || this.lastOutputDir !== outputDir) {
+      this.vaultContext = new VaultContext(this.plugin.app, outputDir);
+      this.lastOutputDir = outputDir;
+    }
+    await this.vaultContext.load((msg) => this.showWelcome(msg));
+    if (!this.hasChatMessages()) {
+      this.showWelcome();
+    }
   }
 
   async onClose(): Promise<void> {
+    this.stopStreaming();
     if (this.currentStream?.animationId) {
       cancelAnimationFrame(this.currentStream.animationId);
     }
   }
 
-  private showWelcome(): void {
+  private clearChat(): void {
+    this.currentStream = null;
+    this.streamAbortController = null;
     this.messagesEl.empty();
-    const welcome = this.messagesEl.createDiv({ cls: "anisync-chat-welcome" });
-    welcome.setText("Ask about your AniList library — media, staff, studios, and more.");
+    this.plugin.startNewChat();
+    this.showWelcome();
+    this.updateSendButton(false);
+  }
+
+  private showWelcome(loadingText?: string): void {
+    if (this.hasChatMessages() && !loadingText) return;
+    if (!loadingText && this.messagesEl.querySelector(".anisync-chat-welcome")) return;
+
+    this.messagesEl.empty();
+    this.messagesEl.style.backgroundImage = `url(${LOGO_DATA_URL})`;
+    this.messagesEl.style.backgroundRepeat = "no-repeat";
+    this.messagesEl.style.backgroundPosition = "center 88px";
+    this.messagesEl.style.backgroundSize = "120px auto";
+
+    const username = this.plugin.settings.anilistUsername;
+    const text = username ? `Search anime, ${username}` : "Search anime";
+
+    const msg = this.messagesEl.createDiv({ cls: "anisync-chat-welcome" });
+    msg.setText(loadingText ?? text);
   }
 
   private async handleSend(): Promise<void> {
     const text = this.inputEl.value.trim();
     if (!text) return;
 
-    const apiKey = this.plugin.settings.openrouterApiKey;
-    const model = this.plugin.settings.openrouterModel;
-    if (!apiKey || !model) {
-      this.addMessage("assistant", "Please configure your OpenRouter API key and select a model in Settings → Ani-sync → OpenRouter AI.");
+    const quick = this.getQuickResponse(text);
+    if (quick) {
+      this.addUserMessage(text);
+      this.addAssistantMessage(quick);
       return;
     }
 
-    this.addMessage("user", text);
+    this.addUserMessage(text);
     this.inputEl.value = "";
-    this.sendBtn.disabled = true;
+    this.updateSendButton(true);
+
+    const apiKey = this.plugin.settings.openrouterApiKey;
+    const model = this.plugin.settings.openrouterModel;
+    const availableModels = this.plugin.settings.openrouterAvailableModels;
+    if (!apiKey || !model) {
+      this.addAssistantMessage("Please configure your OpenRouter API key and select a model in **Settings → Ani-sync → OpenRouter AI**.");
+      this.updateSendButton(false);
+      return;
+    }
+
+    if (availableModels.length > 0 && !availableModels.some((m) => m.id === model)) {
+      this.addAssistantMessage("Your selected OpenRouter model is no longer valid for the current API key. Re-fetch models in **Settings -> Ani-sync -> OpenRouter AI** and pick one again.");
+      this.updateSendButton(false);
+      return;
+    }
 
     const outputDir = this.plugin.settings.outputDir;
-    
-    // Reuse cached VaultContext if outputDir hasn't changed
-    if (!this.vaultContext || this.lastOutputDir !== outputDir) {
+    if (this.vaultContext && this.lastOutputDir === outputDir && this.vaultContext.getLoadedCount() > 0) {
+      // already loaded
+    } else if (!this.vaultContext || this.lastOutputDir !== outputDir) {
       this.vaultContext = new VaultContext(this.plugin.app, outputDir);
       this.lastOutputDir = outputDir;
+      await this.vaultContext.load();
+    } else {
+      await this.vaultContext.load();
     }
-    
-    await this.vaultContext.load();
+
     const context = await this.vaultContext.buildContextForQuery(text);
 
+    const msgEl = this.createAssistantBubble();
+    const bubbleEl = msgEl.lastChild as HTMLDivElement;
+    bubbleEl.innerHTML = '<span class="anisync-chat-thinking"><span class="anisync-thinking-dot"></span><span class="anisync-thinking-dot"></span><span class="anisync-thinking-dot"></span></span>';
+    this.scrollDown();
+
     try {
-      const msgEl = this.addMessage("assistant", "");
-      const bubbleEl = msgEl.querySelector(".anisync-chat-bubble") as HTMLDivElement;
-      bubbleEl.innerHTML = '<span class="anisync-chat-thinking">Thinking...</span>';
-      
       this.currentStream = {
-        bubbleEl,
-        fullContent: "",
-        displayedContent: "",
-        animationId: null,
-        isComplete: false,
-        resolve: () => {},
+        bubbleEl, fullContent: "", displayedContent: "",
+        animationId: null, isComplete: false, resolved: false, resolve: () => {},
       };
+      this.streamAbortController = new AbortController();
 
-      await sendChatStream(apiKey, model, [
-        { role: "system", content: "You are an AniList assistant. Answer ONLY from the provided graph data context. If the answer isn't in the context, say so. Be concise and direct. Use markdown formatting for readability." },
-        { role: "user", content: `[Context]\n${context}\n\n[Question]\n${text}` },
-      ], (token) => {
-        this.onTokenReceived(token);
-      });
+      await sendChatStream(
+        this.plugin.settings.openrouterApiKey,
+        this.plugin.settings.openrouterModel,
+        [
+          { role: "system", content: "You are an AniList assistant. Answer ONLY from the provided graph data context. If the answer isn't in the context, say so. Be concise and direct. Use markdown formatting for readability." },
+          { role: "user", content: `[Context]\n${context}\n\n[Question]\n${text}` },
+        ],
+        (token) => this.onTokenReceived(token),
+        this.streamAbortController.signal,
+      );
 
-      // Stream finished - now wait for animation to catch up
-      await new Promise<void>((resolve) => {
-        this.currentStream!.resolve = resolve;
-        this.finishStreaming();
-      });
-      
+      if (this.currentStream) {
+        await new Promise<void>((resolve) => {
+          if (!this.currentStream) { resolve(); return; }
+          this.currentStream.resolve = resolve;
+          this.finishStreaming();
+          if (!this.currentStream.animationId) this.flushCompletedStream();
+        });
+      }
+
       if (!this.currentStream?.fullContent.trim()) {
         await this.renderMarkdown(bubbleEl, "No response received from the model.", false);
       }
     } catch (err) {
-      const msg = (err as Error)?.message ?? String(err);
-      this.addMessage("assistant", `Error: ${msg}`);
+      const msg = (err as Error).message ?? String(err);
+      if ((err as Error).name === "AbortError") {
+        // user stopped the response; keep any partial content that was already streamed
+      } else if (msg.includes("name not resolved") || msg.includes("ENOTFOUND") || msg.includes("DNS")) {
+        bubbleEl.innerHTML = "Cannot reach OpenRouter API — DNS resolution failed. Check your internet connection or the API endpoint.";
+      } else if (msg.includes("401") || msg.includes("unauthorized") || msg.includes("Unauthorized")) {
+        bubbleEl.innerHTML = "OpenRouter API key is invalid. Go to Settings → Ani-sync → OpenRouter AI and update your key.";
+      } else if (msg.includes("429") || msg.includes("rate limit")) {
+        bubbleEl.innerHTML = "OpenRouter rate limit exceeded. Wait a moment and try again.";
+      } else if (msg.includes("timeout") || msg.includes("TIMEOUT")) {
+        bubbleEl.innerHTML = "OpenRouter request timed out. The API might be slow right now — try again.";
+      } else {
+        bubbleEl.innerHTML = `Error: ${msg}`;
+      }
+      this.scrollDown();
     } finally {
-      this.sendBtn.disabled = false;
+      this.updateSendButton(false);
+      this.streamAbortController = null;
       this.currentStream = null;
     }
   }
 
+  private stopStreaming(): void {
+    if (!this.currentStream) return;
+    this.streamAbortController?.abort();
+    this.finishStreaming();
+    if (!this.currentStream.animationId) this.flushCompletedStream();
+    this.updateSendButton(false);
+  }
+
+  private updateSendButton(isStreaming: boolean): void {
+    this.sendBtn.disabled = false;
+    this.sendBtn.innerHTML = isStreaming ? STOP_ICON : SEND_ICON;
+    this.sendBtn.title = isStreaming ? "Stop response" : "Send message";
+    this.sendBtn.classList.toggle("is-stop", isStreaming);
+  }
+
   private onTokenReceived(token: string): void {
     if (!this.currentStream) return;
-    
     this.currentStream.fullContent += token;
-    
     if (!this.currentStream.animationId) {
-      this.startTypewriterAnimation();
+      this.currentStream.animationId = requestAnimationFrame(() => this.typewriterLoop());
     }
   }
 
-  private startTypewriterAnimation(): void {
+  private typewriterLoop(): void {
     if (!this.currentStream) return;
-    
-    let isRendering = false;
-    
-    const animate = async () => {
-      if (!this.currentStream || isRendering) return;
-      
-      const remaining = this.currentStream.fullContent.length - this.currentStream.displayedContent.length;
-      
-      if (remaining > 0) {
-        isRendering = true;
-        const charsToAdd = Math.max(1, Math.ceil(remaining * 0.15));
-        this.currentStream.displayedContent = this.currentStream.fullContent.slice(0, this.currentStream.displayedContent.length + charsToAdd);
-        await this.renderMarkdown(this.currentStream.bubbleEl, this.currentStream.displayedContent, true);
-        isRendering = false;
-      }
-      
-      if (this.currentStream.displayedContent.length < this.currentStream.fullContent.length) {
-        this.currentStream.animationId = requestAnimationFrame(animate);
-      } else if (this.currentStream.isComplete) {
-        // Animation caught up to content - render final without cursor
-        await this.renderMarkdown(this.currentStream.bubbleEl, this.currentStream.fullContent, false);
-        this.currentStream.animationId = null;
-        this.currentStream.resolve();
-      } else {
-        this.currentStream.animationId = requestAnimationFrame(animate);
-      }
-    };
-    
-    this.currentStream.animationId = requestAnimationFrame(animate);
+    const s = this.currentStream;
+    const remaining = s.fullContent.length - s.displayedContent.length;
+
+    if (remaining > 0) {
+      const chars = Math.max(1, Math.ceil(remaining * 0.15));
+      s.displayedContent = s.fullContent.slice(0, s.displayedContent.length + chars);
+    }
+
+    if (s.displayedContent.length < s.fullContent.length) {
+      s.animationId = requestAnimationFrame(() => this.typewriterLoop());
+    } else if (s.isComplete) {
+      s.animationId = null;
+      this.flushCompletedStream();
+      return;
+    } else {
+      s.animationId = requestAnimationFrame(() => this.typewriterLoop());
+      return;
+    }
+
+    if (!s.bubbleEl.querySelector(".anisync-cursor")) {
+      s.bubbleEl.empty();
+      MarkdownRenderer.render(this.plugin.app, s.displayedContent, s.bubbleEl, "", this);
+      s.bubbleEl.createSpan({ cls: "anisync-cursor", text: "▋" });
+      this.scrollDown();
+    }
   }
 
   private finishStreaming(): void {
-    if (!this.currentStream) return;
-    this.currentStream.isComplete = true;
-    // Let animation loop finish naturally - it will call resolve() when caught up
+    if (this.currentStream) this.currentStream.isComplete = true;
   }
 
-  private async renderMarkdown(el: HTMLDivElement, content: string, showCursor: boolean = false): Promise<void> {
-    el.empty();
-    await MarkdownRenderer.render(
-      this.plugin.app,
-      content,
-      el,
-      "",
-      this
-    );
-    
-    // Add blinking cursor only during streaming
-    if (showCursor && content.length > 0) {
-      const cursor = document.createElement("span");
-      cursor.className = "anisync-cursor";
-      cursor.textContent = "▋";
-      el.appendChild(cursor);
-    }
-    
-    this.messagesEl.scrollTo(0, this.messagesEl.scrollHeight);
-  }
-
-  private addMessage(role: "user" | "assistant", content: string): HTMLDivElement {
-    if (this.messagesEl.querySelector(".anisync-chat-welcome")) {
-      this.messagesEl.empty();
-    }
-
-    const msg = this.messagesEl.createDiv({
-      cls: `anisync-chat-message anisync-chat-message-${role}`,
+  private flushCompletedStream(): void {
+    const s = this.currentStream;
+    if (!s || s.resolved || !s.isComplete) return;
+    s.resolved = true;
+    const content = s.fullContent.trim() ? s.fullContent : "No response received from the model.";
+    void this.renderMarkdown(s.bubbleEl, content, false).finally(() => {
+      this.plugin.saveChatMessage("assistant", content);
+      s.resolve();
     });
-    msg.style.cssText = "display: flex; gap: 8px; max-width: 95%;" + (role === "user" ? " align-self: flex-end; flex-direction: row-reverse;" : " align-self: flex-start;");
+  }
 
-    if (role === "assistant") {
-      const icon = msg.createSpan({ cls: "anisync-chat-avatar" });
-      icon.style.cssText = "width: 24px; height: 24px; border-radius: 4px; background: var(--color-accent); color: var(--text-on-accent); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; flex-shrink: 0;";
-      icon.setText("AI");
+  private async renderMarkdown(el: HTMLDivElement, content: string, showCursor = false): Promise<void> {
+    el.empty();
+    await MarkdownRenderer.render(this.plugin.app, content, el, "", this);
+    if (showCursor && content.length > 0) {
+      el.createSpan({ cls: "anisync-cursor", text: "▋" });
     }
+    this.scrollDown();
+  }
 
+  private addUserMessage(text: string, save = true): void {
+    this.removeWelcome();
+    const msg = this.messagesEl.createDiv({ cls: "anisync-chat-message anisync-chat-message-user" });
     const bubble = msg.createDiv({ cls: "anisync-chat-bubble" });
-    bubble.style.cssText = role === "user" 
-      ? "padding: 10px 14px; border-radius: 12px; background: var(--color-accent); color: var(--text-on-accent); font-size: 13px; line-height: 1.6; word-break: break-word; max-width: 100%;"
-      : "padding: 10px 14px; border-radius: 12px; background: var(--background-secondary); color: var(--text-normal); font-size: 13px; line-height: 1.6; word-break: break-word; max-width: 100%;";
-    
-    if (role === "user") {
-      bubble.setText(content);
-    } else {
-      this.renderMarkdown(bubble, content);
-    }
-    
-    this.messagesEl.scrollTo(0, this.messagesEl.scrollHeight);
+    bubble.setText(text);
+    this.scrollDown();
+    if (save) this.plugin.saveChatMessage("user", text);
+  }
+
+  private addAssistantMessage(text: string, save = true): void {
+    this.removeWelcome();
+    const msg = this.messagesEl.createDiv({ cls: "anisync-chat-message anisync-chat-message-assistant" });
+    const icon = msg.createSpan({ cls: "anisync-chat-avatar" });
+    icon.textContent = "AI";
+    const bubble = msg.createDiv({ cls: "anisync-chat-bubble" });
+    this.renderMarkdown(bubble, text, false);
+    if (save) this.plugin.saveChatMessage("assistant", text);
+  }
+
+  private createAssistantBubble(): HTMLDivElement {
+    this.removeWelcome();
+    const msg = this.messagesEl.createDiv({ cls: "anisync-chat-message anisync-chat-message-assistant" });
+    const icon = msg.createSpan({ cls: "anisync-chat-avatar" });
+    icon.textContent = "AI";
+    msg.createDiv({ cls: "anisync-chat-bubble" });
+    this.scrollDown();
     return msg;
   }
 
-  private showLoading(): void {
-    this.loadingEl.setText("Thinking...");
-    this.loadingEl.show();
-    this.sendBtn.disabled = true;
+  private removeWelcome(): void {
+    const w = this.messagesEl.querySelector(".anisync-chat-welcome");
+    if (w) { w.remove(); this.messagesEl.style.backgroundImage = "none"; }
   }
 
-  private hideLoading(): void {
-    this.loadingEl.hide();
-    this.sendBtn.disabled = false;
-    this.inputEl.focus();
+  private hasChatMessages(): boolean {
+    return !!this.messagesEl.querySelector(".anisync-chat-message");
   }
 
-  clearConversation(): void {
-    this.showWelcome();
+  private scrollDown(): void {
+    this.messagesEl.scrollTo({ top: this.messagesEl.scrollHeight, behavior: "smooth" });
+  }
+
+  private getQuickResponse(text: string): string | null {
+    const t = text.toLowerCase().trim();
+    if (["hi", "hello", "hey", "hola", "howdy", "greetings", "yo", "sup"].some(g => t === g || t.startsWith(g + " ")))
+      return "Hey! I'm your AniList library assistant. Ask me about your anime, manga, characters, studios, or voice actors.";
+    if (["thanks", "thank you", "thx", "ty"].some(g => t.startsWith(g)))
+      return "You're welcome! Let me know if you want to explore your library.";
+    if (["bye", "goodbye", "see you", "later"].some(g => t.startsWith(g)))
+      return "Bye! Happy watching/reading!";
+    if (["who are you", "what are you", "what can you do", "help"].some(g => t.includes(g)))
+      return "I'm an AI assistant with access to your synced AniList library.\n\n**Examples:**\n- \"What anime have I rated 10?\"\n- \"Show me all Studio MAPPA works\"\n- \"What's my highest rated manga?\"\n- \"Who voices Naruto?\"";
+    if (["weather", "news", "politics", "code", "programming", "math", "recipe", "stock", "crypto"].some(k => t.includes(k)))
+      return "I can only answer questions about your AniList library. Try asking about your anime, manga, characters, or voice actors.";
+    return null;
+  }
+
+  invalidateVaultContext(): void {
+    this.vaultContext?.invalidate();
+    this.vaultContext = null;
   }
 }

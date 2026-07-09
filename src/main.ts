@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
+import { App, Modal, Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
 import { ChatView, CHAT_VIEW_TYPE } from "./chat/view";
 import { AnisyncSettings, DEFAULT_SETTINGS } from "./settings";
 import { AnisyncSettingTab } from "./settingsTab";
@@ -8,14 +8,37 @@ import { AnisyncCache, emptyCache } from "./sync/cache";
 import {
   openAuthorizePopup,
   handleDeepLinkToken,
-  disconnectAnilist,
+  clearAnilistCredentials,
   probeAnilistConnection,
 } from "./auth/implicit";
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  timestamp: number;
+}
+
+interface ChatSession {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+  createdAt: number;
+  updatedAt: number;
+}
 
 interface AnisyncData {
   settings: AnisyncSettings;
   cache: AnisyncCache;
+  chatSessions: ChatSession[];
+  activeChatId: string | null;
 }
+
+export interface SyncLogEntry {
+  timestamp: string;
+  message: string;
+}
+
+const MAX_SYNC_LOG_ENTRIES = 500;
 
 class SyncProgressPopup {
   private el: HTMLDivElement | null = null;
@@ -67,6 +90,8 @@ export default class AnisyncPlugin extends Plugin {
   private syncIntervalId: number | null = null;
   private settingTab: AnisyncSettingTab | null = null;
   private syncPopup = new SyncProgressPopup();
+  private syncLog: SyncLogEntry[] = [];
+  private logListeners: (() => void)[] = [];
 
   async onload(): Promise<void> {
     await this.loadAll();
@@ -92,6 +117,7 @@ export default class AnisyncPlugin extends Plugin {
     this.addCommand({
       id: "sync-now",
       name: "Sync now",
+      hotkeys: [{ modifiers: ["Mod", "Shift"], key: "s" }],
       checkCallback: (checking) => {
         if (checking) return this.canSync();
         void this.runSync();
@@ -102,11 +128,16 @@ export default class AnisyncPlugin extends Plugin {
     this.addCommand({
       id: "disconnect",
       name: "Disconnect AniList",
+      hotkeys: [{ modifiers: ["Mod", "Shift"], key: "d" }],
       checkCallback: (checking) => {
         if (checking) return !!this.settings.anilistToken;
         void this.disconnectAnilist().then(() => {
           this.refreshSettingsTab();
           new Notice("Disconnected from AniList.", 3000);
+        }).catch((e) => {
+          const msg = (e as Error)?.message ?? String(e);
+          new Notice(`Disconnect failed: ${msg}`, 6000);
+          this.refreshSettingsTab();
         });
         return true;
       },
@@ -115,6 +146,7 @@ export default class AnisyncPlugin extends Plugin {
     this.addCommand({
       id: "clear-cache",
       name: "Clear sync cache (force full re-sync)",
+      hotkeys: [{ modifiers: ["Mod", "Shift"], key: "c" }],
       callback: () => {
         void this.clearCache();
       },
@@ -123,6 +155,7 @@ export default class AnisyncPlugin extends Plugin {
     this.addCommand({
       id: "open-chat",
       name: "Open Ani-sync Chat",
+      hotkeys: [{ modifiers: ["Mod", "Shift"], key: "o" }],
       callback: () => {
         void this.openChatView();
       },
@@ -142,6 +175,9 @@ export default class AnisyncPlugin extends Plugin {
     this.app.workspace.detachLeavesOfType(CHAT_VIEW_TYPE);
   }
 
+  chatSessions: ChatSession[] = [];
+  activeChatId: string | null = null;
+
   async loadAll(): Promise<void> {
     const raw = (await this.loadData()) as Partial<AnisyncData> | null;
     if (raw && typeof raw === "object") {
@@ -156,6 +192,12 @@ export default class AnisyncPlugin extends Plugin {
       if (raw.cache && typeof raw.cache === "object" && raw.cache.version === 1) {
         this.cache = raw.cache;
       }
+      if (Array.isArray(raw.chatSessions)) {
+        this.chatSessions = raw.chatSessions;
+      }
+      if (raw.activeChatId) {
+        this.activeChatId = raw.activeChatId;
+      }
     } else {
       const legacy = raw as Partial<AnisyncSettings> | null;
       if (legacy && typeof legacy === "object") {
@@ -169,8 +211,73 @@ export default class AnisyncPlugin extends Plugin {
   }
 
   async saveAll(): Promise<void> {
-    const data: AnisyncData = { settings: this.settings, cache: this.cache };
+    const data: AnisyncData = {
+      settings: this.settings,
+      cache: this.cache,
+      chatSessions: this.chatSessions,
+      activeChatId: this.activeChatId,
+    };
     await this.saveData(data);
+  }
+
+  getActiveChatMessages(): ChatMessage[] {
+    if (!this.activeChatId) return [];
+    const session = this.chatSessions.find(s => s.id === this.activeChatId);
+    return session?.messages ?? [];
+  }
+
+  saveChatMessage(role: "user" | "assistant", content: string): void {
+    if (!this.activeChatId) {
+      this.activeChatId = this.generateSessionId();
+    }
+    let session = this.chatSessions.find(s => s.id === this.activeChatId);
+    if (!session) {
+      session = {
+        id: this.activeChatId,
+        title: this.getChatTitle(content),
+        messages: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      this.chatSessions.push(session);
+    }
+    session.messages.push({ role, content, timestamp: Date.now() });
+    session.updatedAt = Date.now();
+    if (session.messages.length > 50) {
+      session.messages = session.messages.slice(-50);
+    }
+    this.saveAll();
+  }
+
+  startNewChat(): string {
+    const newId = this.generateSessionId();
+    this.activeChatId = newId;
+    this.chatSessions.push({
+      id: newId,
+      title: "New Chat",
+      messages: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    this.saveAll();
+    return newId;
+  }
+
+  getAllChatSessions(): ChatSession[] {
+    return [...this.chatSessions].sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  loadChatSession(sessionId: string): void {
+    this.activeChatId = sessionId;
+    this.saveAll();
+  }
+
+  private generateSessionId(): string {
+    return `chat_${Date.now()}_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+  }
+
+  private getChatTitle(firstMessage: string): string {
+    return firstMessage.slice(0, 40) + (firstMessage.length > 40 ? "..." : "");
   }
 
   canSync(): boolean {
@@ -186,16 +293,17 @@ export default class AnisyncPlugin extends Plugin {
   }
 
   async disconnectAnilist(): Promise<void> {
+    this.stopAutoSync();
     this.syncEngine?.cancel();
     this.syncPopup.hide();
-    await disconnectAnilist(this);
+    await clearAnilistCredentials(this);
   }
 
   startAutoSync(): void {
     this.stopAutoSync();
     const ms = Math.max(30, this.settings.pollIntervalSeconds) * 1000;
     const id = window.setInterval(() => {
-      if (this.canSync()) {
+      if (this.canSync() && !this.syncEngine) {
         void this.runSync().catch(() => {});
       }
     }, ms);
@@ -212,6 +320,49 @@ export default class AnisyncPlugin extends Plugin {
 
   refreshSettingsTab(): void {
     this.settingTab?.display();
+  }
+
+  invalidateChatContext(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE)) {
+      const view = leaf.view as import("./chat/view").ChatView;
+      view.invalidateVaultContext();
+    }
+  }
+
+  async applyGraphColors(): Promise<void> {
+    try {
+      const path = ".obsidian/graph.json";
+      const adapter = this.app.vault.adapter;
+      const raw = await adapter.exists(path) ? await adapter.read(path) : '{"colorGroups":[]}';
+      const graph = JSON.parse(raw);
+      const outputDir = (this.settings.outputDir ?? "Ani-sync").replace(/^\/+|\/+$/g, "") || "Ani-sync";
+      const groups: Record<string, unknown>[] = graph.colorGroups ?? [];
+      const kept = groups.filter((g: Record<string, unknown>) => {
+        const q = (g.query as string ?? "").trim();
+        return !q.startsWith(`path:${outputDir}/`);
+      });
+      const folderMap: Record<string, string> = {
+        anime: "Anime",
+        manga: "Manga",
+        staff: "Staff",
+        studios: "Studios",
+        tags: "Tags",
+        characters: "Characters",
+      };
+      const colors = (this.settings.graphColors ?? {}) as unknown as Record<string, string>;
+      for (const [key, folder] of Object.entries(folderMap)) {
+        const hex = colors[key] ?? "#ffffff";
+        const rgb = parseInt(hex.replace("#", ""), 16);
+        kept.push({
+          query: `path:${outputDir}/${folder}`,
+          color: { rgb: isNaN(rgb) ? 16777215 : rgb, a: 1 },
+        });
+      }
+      graph.colorGroups = kept;
+      await adapter.write(path, JSON.stringify(graph, null, 2));
+    } catch (e) {
+      console.error("Ani-sync: failed to apply graph colors", e);
+    }
   }
 
   async runSync(): Promise<void> {
@@ -247,20 +398,22 @@ export default class AnisyncPlugin extends Plugin {
       outputDir: this.settings.outputDir,
       username: this.settings.anilistUsername,
       cache: this.cache,
-      onLog: () => {},
-      onProgress: (m) => {
-        this.syncPopup.show(m, this.estimateProgress(m));
+      onLog: (msg) => this.pushLog(msg),
+      onProgress: (m, p) => {
+        this.syncPopup.show(m, p ?? this.estimateProgress(m));
       },
     });
 
     try {
       const stats = await this.syncEngine.run();
       this.settings.lastSyncAt = new Date().toISOString();
-      this.settings.lastSyncStats = `${stats.created} created, ${stats.updated} updated, ${stats.skipped} unchanged, ${stats.failed} failed`;
+      this.settings.lastSyncStats = `${stats.created} created, ${stats.updated} updated, ${stats.deleted} deleted, ${stats.skipped} unchanged, ${stats.failed} failed`;
       await this.saveAll();
+      try { await this.applyGraphColors(); } catch {}
+      try { this.invalidateChatContext(); } catch {}
       this.syncPopup.show("Sync complete!", 100);
       setTimeout(() => this.syncPopup.hide(), 2000);
-      new Notice(`Ani-sync: done — ${stats.created} created, ${stats.updated} updated, ${stats.skipped} skipped, ${stats.failed} failed`, 6000);
+      new Notice(`Ani-sync: done — ${stats.created} created, ${stats.updated} updated, ${stats.deleted} deleted, ${stats.skipped} skipped, ${stats.failed} failed`, 6000);
     } catch (e) {
       const msg = (e as Error)?.message ?? String(e);
       this.syncPopup.show(`Failed: ${msg}`, 100);
@@ -314,6 +467,36 @@ export default class AnisyncPlugin extends Plugin {
     await this.saveAll();
   }
 
+  pushLog(message: string): void {
+    const entry: SyncLogEntry = { timestamp: new Date().toISOString(), message };
+    this.syncLog.push(entry);
+    if (this.syncLog.length > MAX_SYNC_LOG_ENTRIES) {
+      this.syncLog.shift();
+    }
+    for (const listener of this.logListeners) {
+      try { listener(); } catch {}
+    }
+  }
+
+  getSyncLog(): SyncLogEntry[] {
+    return [...this.syncLog];
+  }
+
+  clearLog(): void {
+    this.syncLog = [];
+    for (const listener of this.logListeners) {
+      try { listener(); } catch {}
+    }
+  }
+
+  onLogChange(listener: () => void): () => void {
+    this.logListeners.push(listener);
+    return () => {
+      const idx = this.logListeners.indexOf(listener);
+      if (idx !== -1) this.logListeners.splice(idx, 1);
+    };
+  }
+
   private buildVaultAdapter(): VaultAdapter {
     const adapter = this.app.vault.adapter;
     const fileManager = this.app.fileManager;
@@ -329,8 +512,14 @@ export default class AnisyncPlugin extends Plugin {
       },
       async write(path: string, content: string): Promise<void> {
         const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
-        if (dir && dir !== "" && !(await adapter.exists(dir))) {
-          await vault.createFolder(dir);
+        if (dir && dir !== "") {
+          try {
+            if (!(await adapter.exists(dir))) {
+              await vault.createFolder(dir);
+            }
+          } catch {
+            // concurrent write created the folder already — proceed
+          }
         }
         const existing = vault.getAbstractFileByPath(path);
         if (existing instanceof TFile) {
@@ -345,6 +534,53 @@ export default class AnisyncPlugin extends Plugin {
           await fileManager.trashFile(file);
         }
       },
+      async exists(path: string): Promise<boolean> {
+        try {
+          return await adapter.exists(path);
+        } catch {
+          return false;
+        }
+      },
     };
+  }
+}
+
+export class ClearCacheConfirmModal extends Modal {
+  private plugin: AnisyncPlugin;
+
+  constructor(app: App, plugin: AnisyncPlugin) {
+    super(app);
+    this.plugin = plugin;
+  }
+
+  onOpen(): void {
+    const { contentEl, titleEl } = this;
+    titleEl.setText("Clear sync cache?");
+
+    contentEl.createEl("p", {
+      text: "This will wipe all cached AniList data, triggering a full re-download on the next sync. This can use a large portion of your AniList API rate limit and may result in temporary rate-limiting if you re-sync immediately.",
+    });
+
+    const btnDiv = contentEl.createDiv({ cls: "modal-button-container" });
+
+    const cancelBtn = btnDiv.createEl("button", { text: "Cancel", cls: "mod-cta" });
+    cancelBtn.onclick = () => this.close();
+
+    const clearBtn = btnDiv.createEl("button", { text: "Clear Cache", cls: "mod-warning" });
+    clearBtn.onclick = async () => {
+      try {
+        await this.plugin.clearCache();
+        new Notice("Cache cleared. Next sync will be a full re-download.", 5000);
+      } catch (e) {
+        new Notice(`Failed to clear cache: ${(e as Error)?.message ?? e}`, 6000);
+      } finally {
+        this.plugin.refreshSettingsTab();
+        this.close();
+      }
+    };
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
   }
 }

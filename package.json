@@ -1,6 +1,6 @@
 {
 	"name": "ani-sync",
-	"version": "0.1.2",
+	"version": "1.0.0",
 	"type": "module",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",

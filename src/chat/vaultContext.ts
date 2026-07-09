@@ -674,8 +674,9 @@ class SearchIndex {
             if (s > score) { score = s; matchedField = `subseq:${f.f}`; }
             break;
           }
+        }
       }
-
+      
       if (score > 0) scored.push({ entry, score, matchedField });
     }
 

@@ -389,9 +389,12 @@ export class ChatView extends ItemView {
 
   private stopStreaming(): void {
     if (!this.currentStream) return;
+    // Mark as complete first to stop typewriter from processing more tokens
+    this.currentStream.isComplete = true;
+    // Abort the stream
     this.streamAbortController?.abort();
-    this.finishStreaming();
-    if (!this.currentStream.animationId) this.flushCompletedStream();
+    // Flush any remaining content
+    this.flushCompletedStream();
     this.updateSendButton(false);
   }
 
@@ -404,7 +407,7 @@ export class ChatView extends ItemView {
   }
 
   private onTokenReceived(token: string): void {
-    if (!this.currentStream) return;
+    if (!this.currentStream || this.currentStream.isComplete) return;
     this.currentStream.fullContent += token;
     if (!this.currentStream.animationId) {
       this.currentStream.animationId = requestAnimationFrame(() => this.typewriterLoop());

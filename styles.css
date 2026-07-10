@@ -1127,8 +1127,12 @@
 .anisync-chat-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   padding: 10px 14px;
   border-bottom: 1px solid var(--background-modifier-border);
   position: relative;
+}
+
+.anisync-chat-header-title {
+  margin-right: auto;
 }

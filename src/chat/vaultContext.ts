@@ -1088,7 +1088,7 @@ export class VaultContext {
   }
 
   async load(onProgress?: (msg: string) => void): Promise<void> {
-    if (this.loaded) return;
+    if (this.loaded && this.nodes.length > 0) return;
     if (this.loadingPromise) return this.loadingPromise;
 
     const generation = ++this.loadGeneration;

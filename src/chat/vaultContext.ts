@@ -43,6 +43,54 @@ const SYNONYM_MAP: Record<string, string[]> = {
   "popular": ["trending", "most viewed"],
   "voice actor": ["seiyuu", "va", "cast"],
   "actor": ["seiyuu", "voice actor"],
+  // Family relationships
+  "kid": ["son", "daughter", "child", "children"],
+  "child": ["son", "daughter", "kid", "children"],
+  "children": ["son", "daughter", "kid", "child"],
+  "son": ["kid", "child", "children"],
+  "daughter": ["kid", "child", "children"],
+  "father": ["dad", "parent"],
+  "mother": ["mom", "parent"],
+  "parent": ["father", "mother", "dad", "mom"],
+  "husband": ["spouse", "partner"],
+  "wife": ["spouse", "partner"],
+  "sibling": ["brother", "sister"],
+  "brother": ["sibling", "bro"],
+  "sister": ["sibling", "sis"],
+  // Query patterns
+  "who voices": ["voice actor", "voiced by", "seiyuu"],
+  "who voiced": ["voice actor", "voiced by", "seiyuu"],
+  "voice of": ["voice actor", "voiced by"],
+  "voiced by": ["voice actor", "who voices"],
+  // Rating patterns
+  "score": ["rating", "rated", "rank"],
+  "rating": ["score", "rank"],
+  "rank": ["score", "rating"],
+  "top": ["best", "highest", "favorite"],
+  "favorite": ["best", "top", "beloved"],
+  "highest": ["best", "top", "maximum"],
+  "lowest": ["worst", "bottom", "minimum"],
+  // Status patterns
+  "plan to watch": ["planned", "want to watch"],
+  "plan to read": ["planned", "want to read"],
+  "planned": ["plan to watch", "plan to read"],
+  "currently watching": ["watching", "in progress"],
+  "currently reading": ["reading", "in progress"],
+  // Genre patterns
+  "romance": ["love", "romantic"],
+  "love": ["romance", "romantic"],
+  "action": ["fighting", "battle"],
+  "comedy": ["funny", "humor"],
+  "funny": ["comedy", "humor"],
+  "drama": ["emotional", "serious"],
+  "horror": ["scary", "frightening"],
+  "scary": ["horror", "frightening"],
+  "thriller": ["suspense", "tension"],
+  "mystery": ["detective", "puzzle"],
+  "fantasy": ["magic", "supernatural"],
+  "magic": ["fantasy", "supernatural"],
+  "sci-fi": ["science fiction", "space"],
+  "sports": ["athletic", "competition"],
 };
 
 const QUERY_STOP_WORDS = new Set([
@@ -100,6 +148,186 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   let intersection = 0;
   for (const t of a) if (b.has(t)) intersection++;
   return intersection / (a.size + b.size - intersection);
+}
+
+// Optimized vector search using TF-IDF + cosine similarity (lazy build)
+interface VectorEntry {
+  id: string;
+  terms: string[];        // Stored terms for fast lookup
+  tfidf: number[];        // Parallel array of TF-IDF values
+  norm: number;
+}
+
+class VectorSearch {
+  private entries: VectorEntry[] = [];
+  private idf: Map<string, number> = new Map();
+  private totalDocs = 0;
+  private built = false;
+  private nodes: VaultNode[] = [];
+
+  // Store nodes but don't build index yet (lazy)
+  setNodes(nodes: VaultNode[]): void {
+    this.nodes = nodes;
+    this.totalDocs = nodes.length;
+    this.built = false;
+  }
+
+  // Build index on first query (lazy initialization)
+  private ensureBuilt(): void {
+    if (this.built || this.nodes.length === 0) return;
+
+    this.entries = [];
+    this.idf.clear();
+
+    // Single pass: compute DF and build vectors simultaneously
+    const df = new Map<string, number>();
+    const tempVectors: Array<{ id: string; tf: Map<string, number> }> = [];
+
+    for (const node of this.nodes) {
+      const text = `${node.title} ${node.body}`;
+      const terms = this.tokenize(text);
+      const tf = new Map<string, number>();
+
+      // Count term frequencies
+      for (const term of terms) {
+        tf.set(term, (tf.get(term) ?? 0) + 1);
+      }
+
+      // Update document frequencies
+      for (const term of tf.keys()) {
+        df.set(term, (df.get(term) ?? 0) + 1);
+      }
+
+      tempVectors.push({ id: node.id, tf });
+    }
+
+    // Compute IDF
+    for (const [term, docCount] of df) {
+      this.idf.set(term, Math.log((this.totalDocs + 1) / (docCount + 1)) + 1);
+    }
+
+    // Build final vectors with precomputed IDF
+    for (const { id, tf } of tempVectors) {
+      const maxFreq = Math.max(...tf.values(), 1);
+      const terms: string[] = [];
+      const tfidf: number[] = [];
+      let normSq = 0;
+
+      for (const [term, freq] of tf) {
+        const normalizedTf = freq / maxFreq;
+        const idfScore = this.idf.get(term) ?? 1;
+        const score = normalizedTf * idfScore;
+
+        terms.push(term);
+        tfidf.push(score);
+        normSq += score * score;
+      }
+
+      this.entries.push({ id, terms, tfidf, norm: Math.sqrt(normSq) });
+    }
+
+    this.built = true;
+  }
+
+  search(query: string, topK = 20): Array<{ id: string; score: number }> {
+    // Lazy build on first query
+    this.ensureBuilt();
+
+    const queryTerms = this.tokenize(query);
+    const queryVector = this.buildQueryVector(queryTerms);
+    const results: Array<{ id: string; score: number }> = [];
+
+    // Convert query vector to parallel arrays for faster lookup
+    const qTerms: string[] = [];
+    const qValues: number[] = [];
+    for (const [term, score] of queryVector) {
+      qTerms.push(term);
+      qValues.push(score);
+    }
+
+    for (const entry of this.entries) {
+      const score = this.fastCosine(qTerms, qValues, entry);
+      if (score > 0.01) {
+        results.push({ id: entry.id, score });
+      }
+    }
+
+    return results
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
+  }
+
+  private fastCosine(qTerms: string[], qValues: number[], entry: VectorEntry): number {
+    let dotProduct = 0;
+    let qNormSq = 0;
+
+    // Build lookup map for entry terms
+    const entryMap = new Map<string, number>();
+    for (let i = 0; i < entry.terms.length; i++) {
+      entryMap.set(entry.terms[i], entry.tfidf[i]);
+    }
+
+    // Compute dot product and query norm
+    for (let i = 0; i < qTerms.length; i++) {
+      const docScore = entryMap.get(qTerms[i]);
+      if (docScore !== undefined) {
+        dotProduct += qValues[i] * docScore;
+      }
+      qNormSq += qValues[i] * qValues[i];
+    }
+
+    const qNorm = Math.sqrt(qNormSq);
+    if (qNorm === 0 || entry.norm === 0) return 0;
+
+    return dotProduct / (qNorm * entry.norm);
+  }
+
+  private tokenize(text: string): string[] {
+    // Optimized tokenizer - single pass, no regex
+    const result: string[] = [];
+    const lower = text.toLowerCase();
+    let word = '';
+    let wordLen = 0;
+
+    for (let i = 0; i < lower.length; i++) {
+      const c = lower.charCodeAt(i);
+      // a-z or 0-9
+      if ((c >= 97 && c <= 122) || (c >= 48 && c <= 57)) {
+        word += lower[i];
+        wordLen++;
+      } else if (wordLen > 0) {
+        // End of word
+        if (wordLen > 2 && !INDEX_STOP_WORDS.has(word)) {
+          result.push(word);
+        }
+        word = '';
+        wordLen = 0;
+      }
+    }
+
+    // Don't forget last word
+    if (wordLen > 2 && !INDEX_STOP_WORDS.has(word)) {
+      result.push(word);
+    }
+
+    return result;
+  }
+
+  private buildQueryVector(terms: string[]): Map<string, number> {
+    const tf = new Map<string, number>();
+    for (const term of terms) {
+      tf.set(term, (tf.get(term) ?? 0) + 1);
+    }
+
+    const vector = new Map<string, number>();
+    const maxFreq = Math.max(...tf.values(), 1);
+    for (const [term, freq] of tf) {
+      const idfScore = this.idf.get(term) ?? 1;
+      vector.set(term, (freq / maxFreq) * idfScore);
+    }
+
+    return vector;
+  }
 }
 
 function expandQuery(query: string): string {
@@ -200,7 +428,48 @@ function parseConstraints(query: string): ParsedConstraints {
 
   const genreKeywords = ["romance", "action", "comedy", "drama", "fantasy", "slice of life", "thriller", "mystery", "horror", "sports", "sci fi", "supernatural"];
   const genres = genreKeywords.filter((genre) => q.includes(genre));
-  const scoreMatch = query.match(/\b(?:score|rated?|rating)\s*(?:above|over|>=|at least)?\s*(\d{1,2})\b/i);
+
+  // Score parsing (supports: "score 5", "score above 3", "score below 8", "rated 10")
+  let minScore: number | null = null;
+  let maxScore: number | null = null;
+  const scoreAboveMatch = query.match(/\b(?:score|rated?|rating)\s*(?:above|over|>=|at least|more than)\s*(\d{1,2})\b/i);
+  const scoreBelowMatch = query.match(/\b(?:score|rated?|rating)\s*(?:below|under|<=|at most|less than)\s*(\d{1,2})\b/i);
+  const scoreExactMatch = query.match(/\b(?:score|rated?|rating)\s*(?:of|is|=)?\s*(\d{1,2})\b/i);
+  if (scoreAboveMatch) minScore = Number(scoreAboveMatch[1]);
+  else if (scoreBelowMatch) maxScore = Number(scoreBelowMatch[1]);
+  else if (scoreExactMatch) { minScore = Number(scoreExactMatch[1]); maxScore = Number(scoreExactMatch[1]); }
+
+  // Episode parsing (supports: "100 episodes", "more than 50 episodes", "less than 12 episodes")
+  let minEpisodes: number | null = null;
+  let maxEpisodes: number | null = null;
+  const epAboveMatch = query.match(/\b(?:more than|over|>=|at least|above)\s*(\d+)\s*episodes?\b/i);
+  const epBelowMatch = query.match(/\b(?:less than|under|<=|at most|below)\s*(\d+)\s*episodes?\b/i);
+  const epExactMatch = query.match(/\b(\d+)\s*episodes?\b/i);
+  if (epAboveMatch) minEpisodes = Number(epAboveMatch[1]);
+  else if (epBelowMatch) maxEpisodes = Number(epBelowMatch[1]);
+  else if (epExactMatch) { minEpisodes = Number(epExactMatch[1]); maxEpisodes = Number(epExactMatch[1]); }
+
+  // Duration parsing (supports: "30 min", "more than 60 min")
+  let minDuration: number | null = null;
+  let maxDuration: number | null = null;
+  const durAboveMatch = query.match(/\b(?:more than|over|>=|at least|above)\s*(\d+)\s*(?:min|minutes?)\b/i);
+  const durBelowMatch = query.match(/\b(?:less than|under|<=|at most|below)\s*(\d+)\s*(?:min|minutes?)\b/i);
+  const durExactMatch = query.match(/\b(\d+)\s*(?:min|minutes?)\b/i);
+  if (durAboveMatch) minDuration = Number(durAboveMatch[1]);
+  else if (durBelowMatch) maxDuration = Number(durBelowMatch[1]);
+  else if (durExactMatch) { minDuration = Number(durExactMatch[1]); maxDuration = Number(durExactMatch[1]); }
+
+  // Year parsing (supports: "2024", "in 2023", "from 2020 to 2024")
+  let minYear: number | null = null;
+  let maxYear: number | null = null;
+  const yearRangeMatch = query.match(/\b(?:from|between)\s*(\d{4})\s*(?:to|and|-)\s*(\d{4})\b/i);
+  const yearInMatch = query.match(/\b(?:in|during|year)\s*(\d{4})\b/i);
+  const yearFromMatch = query.match(/\b(?:from|since|after)\s*(\d{4})\b/i);
+  const yearToMatch = query.match(/\b(?:to|until|before)\s*(\d{4})\b/i);
+  if (yearRangeMatch) { minYear = Number(yearRangeMatch[1]); maxYear = Number(yearRangeMatch[2]); }
+  else if (yearInMatch) { minYear = Number(yearInMatch[1]); maxYear = Number(yearInMatch[1]); }
+  else if (yearFromMatch) minYear = Number(yearFromMatch[1]);
+  else if (yearToMatch) maxYear = Number(yearToMatch[1]);
 
   return {
     typeFilter: /\banime\b/i.test(q) ? "anime" : /\bmanga\b/i.test(q) ? "manga" : null,
@@ -210,7 +479,14 @@ function parseConstraints(query: string): ParsedConstraints {
     studios: collectAfter([/\bstudio\s+(.+)/i, /\bby studio\s+(.+)/i]),
     voiceActors: collectAfter([/\bvoic(?:e|ed) actor\s+(.+)/i, /\bseiyuu\s+(.+)/i, /\bvoiced by\s+(.+)/i]),
     characters: collectAfter([/\bcharacter\s+(.+)/i]),
-    minScore: scoreMatch ? Number(scoreMatch[1]) : null,
+    minScore,
+    maxScore,
+    minEpisodes,
+    maxEpisodes,
+    minDuration,
+    maxDuration,
+    minYear,
+    maxYear,
   };
 }
 
@@ -274,6 +550,13 @@ interface ParsedConstraints {
   voiceActors: string[];
   characters: string[];
   minScore: number | null;
+  maxScore: number | null;
+  minEpisodes: number | null;
+  maxEpisodes: number | null;
+  minDuration: number | null;
+  maxDuration: number | null;
+  minYear: number | null;
+  maxYear: number | null;
 }
 
 class SearchIndex {
@@ -293,6 +576,8 @@ class SearchIndex {
   // Title and path lookup maps for O(1) link graph resolution
   private titleMap = new Map<string, VaultNode>();
   private pathMap = new Map<string, VaultNode>();
+  // Vector search for semantic similarity
+  private vectorSearch = new VectorSearch();
 
   build(nodes: VaultNode[]): void {
     this.entries = [];
@@ -304,6 +589,9 @@ class SearchIndex {
     this.titleMap.clear();
     this.pathMap.clear();
     this.totalDocs = nodes.length;
+
+    // Set nodes for lazy vector build (built on first query)
+    this.vectorSearch.setNodes(nodes);
 
     // Pre-compute token frequencies for IDF (excluding stop words)
     const tokenDocCount = new Map<string, number>();
@@ -600,9 +888,19 @@ class SearchIndex {
         for (const section of entry.sections) {
           const overlap = queryTokens.filter((term) => section.tokens.includes(term)).length;
           if (overlap === 0) continue;
+
+          // Improved scoring: give higher weight to matching key terms
           const coverage = overlap / Math.max(1, queryTokens.length);
           const tri = jaccard(queryTrigrams, section.trigrams);
-          const sectionScore = 68 + coverage * 12 + tri * 10;
+
+          // Bonus for matching important terms (names, entities)
+          const importantTerms = queryTokens.filter(t =>
+            t.length > 3 && !["name", "about", "what", "who", "tell", "also"].includes(t)
+          );
+          const importantOverlap = importantTerms.filter(t => section.tokens.includes(t)).length;
+          const importantBonus = importantOverlap * 3;
+
+          const sectionScore = 68 + coverage * 12 + tri * 10 + importantBonus;
           if (sectionScore > score) {
             score = sectionScore;
             matchedField = `section:${section.heading}`;
@@ -616,7 +914,11 @@ class SearchIndex {
 
           const coverage = matchedTerms.length / Math.max(1, queryTokens.length);
           const headingLengthPenalty = Math.min(1, matchedTerms.length / Math.max(1, headingTokens.length));
-          const headingScore = 72 + coverage * 18 + headingLengthPenalty * 6;
+
+          // Bonus for matching multiple terms in heading
+          const multiTermBonus = matchedTerms.length >= 2 ? matchedTerms.length * 2 : 0;
+
+          const headingScore = 72 + coverage * 18 + headingLengthPenalty * 6 + multiTermBonus;
 
           if (headingScore > score) {
             score = headingScore;
@@ -658,6 +960,19 @@ class SearchIndex {
         if (charIntent && entry.node.type === "media_characters") norm += 10;
         if (whoIntent && entry.node.type === "media_characters") norm += 12;
         if (norm > score) { score = norm; matchedField = "bm25"; }
+      }
+
+      // Vector search for semantic similarity (use expanded query with synonyms)
+      if (score < 60) {
+        const vectorResults = this.vectorSearch.search(expandedQuery, 5);
+        const vectorMatch = vectorResults.find(r => r.id === entry.node.id);
+        if (vectorMatch) {
+          const vectorScore = Math.min(70, vectorMatch.score * 100);
+          if (vectorScore > score) {
+            score = vectorScore;
+            matchedField = "vector:semantic";
+          }
+        }
       }
 
       if (score < 15 && q.length >= 3) {
@@ -721,6 +1036,9 @@ export class VaultContext {
   private loaded = false;
   private index: SearchIndex | null = null;
   private loadGeneration = 0;
+  private indexCache: { nodes: VaultNode[]; timestamp: number } | null = null;
+  private fileHashes: Map<string, string> = new Map();
+  private cacheFile = ".anisync-search-cache.json";
 
   constructor(app: App, basePath: string) {
     this.app = app;
@@ -734,6 +1052,7 @@ export class VaultContext {
     this.index = null;
     this.loaded = false;
     this.loadingPromise = null;
+    this.indexCache = null;
     this.loadGeneration++;
   }
 
@@ -744,27 +1063,68 @@ export class VaultContext {
     const generation = ++this.loadGeneration;
     this.loadingPromise = (async () => {
       try {
+        // Try to load from in-memory cache first (instant)
+        if (this.indexCache) {
+          const age = Date.now() - this.indexCache.timestamp;
+          if (age < 5 * 60 * 1000) {
+            onProgress?.("Loading from memory cache...");
+            this.nodes = this.indexCache.nodes;
+            this.index = new SearchIndex();
+            this.index.build(this.nodes);
+            this.loaded = true;
+            onProgress?.("Index ready (memory cached) — " + this.nodes.length + " entries");
+            return;
+          }
+        }
+
+        // Try to load from disk cache
+        const diskCache = await this.loadDiskCache();
+        if (diskCache) {
+          onProgress?.("Loading from disk cache...");
+          this.nodes = diskCache.nodes;
+          this.fileHashes = new Map(Object.entries(diskCache.fileHashes));
+          this.index = new SearchIndex();
+          this.index.build(this.nodes);
+          this.loaded = true;
+          this.indexCache = { nodes: this.nodes, timestamp: Date.now() };
+          onProgress?.("Index ready (disk cached) — " + this.nodes.length + " entries");
+          return;
+        }
+
         const folder = this.app.vault.getAbstractFileByPath(this.basePath);
         if (!folder) { onProgress?.("Folder not found"); return; }
 
         const files = this.getAllMarkdownFiles(folder);
         onProgress?.(`Found ${files.length} files`);
-        // Parallel file reads (batch of 20)
-        const BATCH = 20;
+
+        // Full load from files
         const newNodes: VaultNode[] = [];
+        const BATCH = 20;
         for (let i = 0; i < files.length; i += BATCH) {
-          // Check if this load was invalidated
           if (generation !== this.loadGeneration) return;
           const batch = files.slice(i, i + BATCH);
           const nodes = await Promise.all(batch.map(f => this.parseFile(f)));
           for (const node of nodes) {
             if (node) newNodes.push(node);
           }
-          onProgress?.(`Read ${Math.min(i + BATCH, files.length)}/${files.length} files (${newNodes.length} indexed)`);
+          onProgress?.(`Read ${Math.min(i + BATCH, files.length)}/${files.length} files`);
         }
-        // Check if this load was invalidated before finalizing
+
         if (generation !== this.loadGeneration) return;
         this.nodes = newNodes;
+
+        // Update file hashes
+        for (const file of files) {
+          const content = await this.app.vault.read(file);
+          this.fileHashes.set(file.path, this.simpleHash(content));
+        }
+
+        // Save to disk cache
+        await this.saveDiskCache();
+
+        // Cache in memory
+        this.indexCache = { nodes: this.nodes, timestamp: Date.now() };
+
         onProgress?.("Building search index...");
         this.index = new SearchIndex();
         this.index.build(this.nodes);
@@ -776,6 +1136,52 @@ export class VaultContext {
     })();
 
     return this.loadingPromise;
+  }
+
+  private async loadDiskCache(): Promise<{ nodes: VaultNode[]; fileHashes: Record<string, string>; timestamp: number } | null> {
+    try {
+      const adapter = this.app.vault.adapter;
+      const cachePath = `${this.basePath}/${this.cacheFile}`;
+      const exists = await adapter.exists(cachePath);
+      if (!exists) return null;
+
+      const content = await adapter.read(cachePath);
+      const cache = JSON.parse(content);
+
+      // Check if cache is less than 1 hour old
+      if (Date.now() - cache.timestamp > 60 * 60 * 1000) {
+        return null;
+      }
+
+      return cache;
+    } catch {
+      return null;
+    }
+  }
+
+  private async saveDiskCache(): Promise<void> {
+    try {
+      const adapter = this.app.vault.adapter;
+      const cachePath = `${this.basePath}/${this.cacheFile}`;
+      const cache = {
+        nodes: this.nodes,
+        fileHashes: Object.fromEntries(this.fileHashes),
+        timestamp: Date.now(),
+      };
+      await adapter.write(cachePath, JSON.stringify(cache));
+    } catch (e) {
+      console.error("[VaultContext] Failed to save cache:", e);
+    }
+  }
+
+  private simpleHash(str: string): string {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash;
+    }
+    return hash.toString(36);
   }
 
   private getAllMarkdownFiles(folder: any): TFile[] {
@@ -963,6 +1369,57 @@ export class VaultContext {
       });
     }
 
+    if (constraints.maxScore != null) {
+      filteredResults = filteredResults.filter((r) => {
+        const userScore = Number(r.node.frontmatter.score ?? 999);
+        return !Number.isNaN(userScore) && userScore <= constraints.maxScore!;
+      });
+    }
+
+    if (constraints.minEpisodes != null) {
+      filteredResults = filteredResults.filter((r) => {
+        const episodes = Number(r.node.frontmatter.episodes ?? 0);
+        return !Number.isNaN(episodes) && episodes >= constraints.minEpisodes!;
+      });
+    }
+
+    if (constraints.maxEpisodes != null) {
+      filteredResults = filteredResults.filter((r) => {
+        const episodes = Number(r.node.frontmatter.episodes ?? 9999);
+        return !Number.isNaN(episodes) && episodes <= constraints.maxEpisodes!;
+      });
+    }
+
+    if (constraints.minDuration != null) {
+      filteredResults = filteredResults.filter((r) => {
+        const duration = Number(r.node.frontmatter.duration ?? 0);
+        return !Number.isNaN(duration) && duration >= constraints.minDuration!;
+      });
+    }
+
+    if (constraints.maxDuration != null) {
+      filteredResults = filteredResults.filter((r) => {
+        const duration = Number(r.node.frontmatter.duration ?? 9999);
+        return !Number.isNaN(duration) && duration <= constraints.maxDuration!;
+      });
+    }
+
+    if (constraints.minYear != null) {
+      filteredResults = filteredResults.filter((r) => {
+        const startDate = String(r.node.frontmatter.mediaStart ?? "");
+        const year = startDate ? Number(startDate.substring(0, 4)) : 0;
+        return !Number.isNaN(year) && year >= constraints.minYear!;
+      });
+    }
+
+    if (constraints.maxYear != null) {
+      filteredResults = filteredResults.filter((r) => {
+        const startDate = String(r.node.frontmatter.mediaStart ?? "");
+        const year = startDate ? Number(startDate.substring(0, 4)) : 9999;
+        return !Number.isNaN(year) && year <= constraints.maxYear!;
+      });
+    }
+
     // Multi-term fallback: when search gives low scores, find nodes containing ALL query terms
     const needsFallback = filteredResults.length === 0 || filteredResults[0].score < 30;
     if (needsFallback) {
@@ -1001,7 +1458,7 @@ export class VaultContext {
     return this.nodes.filter((n) => n.body.toLowerCase().includes(q) && (n.type === "anime" || n.type === "manga"));
   }
 
-  buildPromptContext(results: VaultSearchResult[], mode: QueryMode = "entity"): string {
+  buildPromptContext(results: VaultSearchResult[], mode: QueryMode = "entity", query: string = ""): string {
     if (results.length === 0) return "No matching data found in your AniList library.";
 
     // Token budget: ~4 chars per token, cap at ~6000 tokens for context safety
@@ -1037,7 +1494,10 @@ export class VaultContext {
       if (n.frontmatter.progress != null) lines.push(`  Progress: ${n.frontmatter.progress}`);
       if (n.frontmatter.anilistUrl) lines.push(`  URL: ${n.frontmatter.anilistUrl}`);
 
-      const bodyLines = this.extractRelevantBodyLines(n.body, r.matchedHeading, r.matchedSection, mode);
+      // Use smart section extraction for better context
+      const bodyLines = r.matchedSection
+        ? r.matchedSection.split("\n")
+        : this.extractRelevantSections(n.body, query);
       for (const line of bodyLines) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith("![") || trimmed.startsWith("|")) continue;
@@ -1057,7 +1517,7 @@ export class VaultContext {
     await this.load();
     const mode = detectQueryMode(query);
     const results = this.selectResultsForMode(query, mode);
-    return this.buildPromptContext(results, mode);
+    return this.buildPromptContext(results, mode, query);
   }
 
   private selectResultsForMode(query: string, mode: QueryMode): VaultSearchResult[] {
@@ -1160,7 +1620,76 @@ export class VaultContext {
       }
     }
 
+    // Include prelude (title, status, score) + matched section
     const prelude = lines.slice(0, Math.min(lines.length, 10)).filter((line) => line.startsWith("# ") || line.startsWith("**Status:**") || line.startsWith("**Score:**"));
     return [...prelude, "", ...lines.slice(start, end)];
+  }
+
+  // Extract sections that are most relevant to the query
+  private extractRelevantSections(body: string, query: string): string[] {
+    const lines = body.split("\n");
+    const queryLower = query.toLowerCase();
+    const queryTokens = tokenize(query);
+
+    // Find all sections with their relevance scores
+    const sections: Array<{ start: number; end: number; score: number; heading: string }> = [];
+    let currentStart = -1;
+    let currentHeading = "";
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.startsWith("## ")) {
+        if (currentStart >= 0) {
+          sections.push({ start: currentStart, end: i, score: 0, heading: currentHeading });
+        }
+        currentStart = i;
+        currentHeading = line.slice(3).trim();
+      }
+    }
+    if (currentStart >= 0) {
+      sections.push({ start: currentStart, end: lines.length, score: 0, heading: currentHeading });
+    }
+
+    // Score each section based on query relevance
+    for (const section of sections) {
+      const sectionText = lines.slice(section.start, section.end).join(" ").toLowerCase();
+      const sectionTokens = tokenize(sectionText);
+
+      // Token overlap score
+      const overlap = queryTokens.filter(t => sectionTokens.includes(t)).length;
+      const tokenScore = overlap / Math.max(1, queryTokens.length);
+
+      // Heading match score
+      const headingLower = section.heading.toLowerCase();
+      let headingScore = 0;
+      if (headingLower.includes(queryLower)) headingScore = 1;
+      else if (queryTokens.some(t => headingLower.includes(t))) headingScore = 0.5;
+
+      // Combine scores
+      section.score = tokenScore * 0.6 + headingScore * 0.4;
+    }
+
+    // Sort by score and take top sections
+    sections.sort((a, b) => b.score - a.score);
+    const topSections = sections.filter(s => s.score > 0.1).slice(0, 5);
+
+    if (topSections.length === 0) {
+      // Fallback: return first 50 lines
+      return lines.slice(0, 50);
+    }
+
+    // Collect lines from top sections
+    const result: string[] = [];
+    const prelude = lines.slice(0, Math.min(lines.length, 10)).filter(line => 
+      line.startsWith("# ") || line.startsWith("**Status:**") || line.startsWith("**Score:**")
+    );
+    result.push(...prelude);
+
+    for (const section of topSections) {
+      result.push("");
+      result.push(...lines.slice(section.start, section.end));
+    }
+
+    return result;
   }
 }

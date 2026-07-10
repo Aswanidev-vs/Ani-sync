@@ -383,8 +383,8 @@
 }
 
 .anisync-chat-new-btn {
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border-radius: 8px;
   border: 1px solid var(--background-modifier-border);
   background: var(--background-secondary);
@@ -419,7 +419,6 @@
   flex-direction: column;
   gap: 12px;
   align-content: flex-start;
-  scroll-behavior: smooth;
 }
 
 .anisync-chat-messages::-webkit-scrollbar {
@@ -458,6 +457,7 @@
 .anisync-chat-message-user {
   align-self: flex-end;
   flex-direction: row-reverse;
+  gap: 0;
 }
 
 .anisync-chat-message-assistant {
@@ -534,7 +534,7 @@
 }
 
 .anisync-chat-message-user .anisync-chat-bubble code {
-  background: rgba(0, 0, 0, 0.2);
+  background: rgba(0, 0, 0, 0.35);
   color: var(--text-on-accent);
 }
 
@@ -547,6 +547,17 @@
   overflow-x: auto;
   font-size: 0.8em;
   line-height: 1.5;
+}
+
+.anisync-chat-bubble pre::-webkit-scrollbar {
+  height: 5px;
+}
+.anisync-chat-bubble pre::-webkit-scrollbar-track {
+  background: transparent;
+}
+.anisync-chat-bubble pre::-webkit-scrollbar-thumb {
+  background: var(--background-modifier-border);
+  border-radius: 3px;
 }
 
 .anisync-chat-bubble pre code {
@@ -907,7 +918,6 @@
   background: var(--background-secondary);
   border: 1px solid var(--background-modifier-border);
   flex-shrink: 0;
-  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.06);
   align-items: flex-end;
 }
 
@@ -923,6 +933,7 @@
   min-height: 36px;
   max-height: 120px;
   outline: none;
+  box-sizing: border-box;
 }
 
 .anisync-chat-input::placeholder {
@@ -969,4 +980,159 @@
   color: var(--text-muted);
   text-align: center;
   font-style: italic;
+}
+
+/* History button */
+.anisync-chat-history-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s, transform 0.15s;
+  flex-shrink: 0;
+}
+
+.anisync-chat-history-btn:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+  transform: scale(1.08);
+}
+
+.anisync-chat-history-btn:active {
+  transform: scale(0.95);
+}
+
+/* History dropdown */
+.anisync-chat-history-dropdown {
+  position: absolute;
+  top: 44px;
+  right: 12px;
+  width: 280px;
+  max-height: 400px;
+  overflow-y: auto;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  z-index: 100;
+  padding: 6px;
+}
+
+.anisync-history-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.anisync-history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.anisync-history-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.anisync-history-item.is-active {
+  background: var(--background-modifier-active);
+}
+
+.anisync-history-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.anisync-history-item-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-normal);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.anisync-history-item-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.anisync-history-item-delete {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.5;
+  transition: opacity 0.1s, color 0.1s, background 0.1s;
+  flex-shrink: 0;
+}
+
+.anisync-history-item:hover .anisync-history-item-delete {
+  opacity: 1;
+}
+
+.anisync-history-item-delete:hover {
+  color: var(--color-error);
+  background: var(--background-modifier-hover);
+}
+
+.anisync-history-delete-all {
+  padding: 10px 12px;
+  margin-top: 4px;
+  border-top: 1px solid var(--background-modifier-border);
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-error);
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background 0.1s;
+}
+
+.anisync-history-delete-all:hover {
+  background: var(--background-modifier-hover);
+}
+
+/* Message timestamps */
+.anisync-chat-timestamp {
+  font-size: 10px;
+  color: var(--text-faint);
+  margin-top: 8px;
+  padding-top: 4px;
+  text-align: right;
+}
+
+.anisync-chat-message-user .anisync-chat-timestamp {
+  text-align: left;
+}
+
+/* Header positioning for dropdown */
+.anisync-chat-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  position: relative;
+}
+
+.anisync-chat-header-title {
+  margin-right: auto;
 }

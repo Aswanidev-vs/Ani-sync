@@ -889,18 +889,23 @@ class SearchIndex {
           const overlap = queryTokens.filter((term) => section.tokens.includes(term)).length;
           if (overlap === 0) continue;
 
-          // Improved scoring: give higher weight to matching key terms
-          const coverage = overlap / Math.max(1, queryTokens.length);
+          // Improved scoring: filter out generic words for coverage calculation
+          const genericWords = ["tell", "me", "about", "what", "who", "name", "also", "the", "is", "are", "was", "were"];
+          const meaningfulTokens = queryTokens.filter(t => !genericWords.includes(t) && t.length > 2);
+          const meaningfulOverlap = meaningfulTokens.filter(t => section.tokens.includes(t)).length;
+
+          // Use meaningful tokens for coverage (not generic words)
+          const coverage = meaningfulTokens.length > 0 ? meaningfulOverlap / meaningfulTokens.length : overlap / Math.max(1, queryTokens.length);
           const tri = jaccard(queryTrigrams, section.trigrams);
 
           // Bonus for matching important terms (names, entities)
           const importantTerms = queryTokens.filter(t =>
-            t.length > 3 && !["name", "about", "what", "who", "tell", "also"].includes(t)
+            t.length > 3 && !genericWords.includes(t)
           );
           const importantOverlap = importantTerms.filter(t => section.tokens.includes(t)).length;
-          const importantBonus = importantOverlap * 3;
+          const importantBonus = importantOverlap * 5;
 
-          const sectionScore = 68 + coverage * 12 + tri * 10 + importantBonus;
+          const sectionScore = 68 + coverage * 15 + tri * 10 + importantBonus;
           if (sectionScore > score) {
             score = sectionScore;
             matchedField = `section:${section.heading}`;
@@ -912,13 +917,18 @@ class SearchIndex {
           const matchedTerms = queryTokens.filter((term) => headingTokens.includes(term));
           if (matchedTerms.length === 0) continue;
 
-          const coverage = matchedTerms.length / Math.max(1, queryTokens.length);
+          // Filter out generic words for coverage calculation
+          const genericWords = ["tell", "me", "about", "what", "who", "name", "also", "the", "is", "are", "was", "were"];
+          const meaningfulMatched = matchedTerms.filter(t => !genericWords.includes(t) && t.length > 2);
+          const meaningfulQueryTokens = queryTokens.filter(t => !genericWords.includes(t) && t.length > 2);
+
+          const coverage = meaningfulQueryTokens.length > 0 ? meaningfulMatched.length / meaningfulQueryTokens.length : matchedTerms.length / Math.max(1, queryTokens.length);
           const headingLengthPenalty = Math.min(1, matchedTerms.length / Math.max(1, headingTokens.length));
 
-          // Bonus for matching multiple terms in heading
-          const multiTermBonus = matchedTerms.length >= 2 ? matchedTerms.length * 2 : 0;
+          // Bonus for matching important terms in heading
+          const importantBonus = meaningfulMatched.length * 3;
 
-          const headingScore = 72 + coverage * 18 + headingLengthPenalty * 6 + multiTermBonus;
+          const headingScore = 72 + coverage * 20 + headingLengthPenalty * 6 + importantBonus;
 
           if (headingScore > score) {
             score = headingScore;
@@ -929,12 +939,18 @@ class SearchIndex {
         for (const entity of entityCandidates) {
           const entityTokens = tokenize(entity);
           if (entityTokens.length === 0) continue;
+
+          // Filter out generic words from entity tokens
+          const genericWords = ["tell", "me", "about", "what", "who", "name", "also", "the", "is", "are", "was", "were"];
+          const meaningfulEntityTokens = entityTokens.filter(t => !genericWords.includes(t) && t.length > 2);
+          if (meaningfulEntityTokens.length === 0) continue;
+
           for (let i = 0; i < entry.headingTokens.length; i++) {
             const headingTokens = entry.headingTokens[i];
-            const exactCoverage = entityTokens.filter((term) => headingTokens.includes(term)).length;
+            const exactCoverage = meaningfulEntityTokens.filter((term) => headingTokens.includes(term)).length;
             if (exactCoverage === 0) continue;
 
-            const coverage = exactCoverage / entityTokens.length;
+            const coverage = exactCoverage / meaningfulEntityTokens.length;
             const tightness = exactCoverage / Math.max(1, headingTokens.length);
             const exactPhrase = entry.headings[i].toLowerCase() === entity;
             const candidateScore = (exactPhrase ? 98 : 0) + 76 + coverage * 16 + tightness * 6;

@@ -833,9 +833,19 @@ class SearchIndex {
         for (const section of entry.sections) {
           const overlap = queryTokens.filter((term) => section.tokens.includes(term)).length;
           if (overlap === 0) continue;
+
+          // Improved scoring: give higher weight to matching key terms
           const coverage = overlap / Math.max(1, queryTokens.length);
           const tri = jaccard(queryTrigrams, section.trigrams);
-          const sectionScore = 68 + coverage * 12 + tri * 10;
+
+          // Bonus for matching important terms (names, entities)
+          const importantTerms = queryTokens.filter(t =>
+            t.length > 3 && !["name", "about", "what", "who", "tell", "also"].includes(t)
+          );
+          const importantOverlap = importantTerms.filter(t => section.tokens.includes(t)).length;
+          const importantBonus = importantOverlap * 3;
+
+          const sectionScore = 68 + coverage * 12 + tri * 10 + importantBonus;
           if (sectionScore > score) {
             score = sectionScore;
             matchedField = `section:${section.heading}`;
@@ -849,7 +859,11 @@ class SearchIndex {
 
           const coverage = matchedTerms.length / Math.max(1, queryTokens.length);
           const headingLengthPenalty = Math.min(1, matchedTerms.length / Math.max(1, headingTokens.length));
-          const headingScore = 72 + coverage * 18 + headingLengthPenalty * 6;
+
+          // Bonus for matching multiple terms in heading
+          const multiTermBonus = matchedTerms.length >= 2 ? matchedTerms.length * 2 : 0;
+
+          const headingScore = 72 + coverage * 18 + headingLengthPenalty * 6 + multiTermBonus;
 
           if (headingScore > score) {
             score = headingScore;

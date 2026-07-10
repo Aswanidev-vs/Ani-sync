@@ -1338,7 +1338,7 @@ export class VaultContext {
     return this.nodes.filter((n) => n.body.toLowerCase().includes(q) && (n.type === "anime" || n.type === "manga"));
   }
 
-  buildPromptContext(results: VaultSearchResult[], mode: QueryMode = "entity"): string {
+  buildPromptContext(results: VaultSearchResult[], mode: QueryMode = "entity", query: string = ""): string {
     if (results.length === 0) return "No matching data found in your AniList library.";
 
     // Token budget: ~4 chars per token, cap at ~6000 tokens for context safety
@@ -1374,7 +1374,10 @@ export class VaultContext {
       if (n.frontmatter.progress != null) lines.push(`  Progress: ${n.frontmatter.progress}`);
       if (n.frontmatter.anilistUrl) lines.push(`  URL: ${n.frontmatter.anilistUrl}`);
 
-      const bodyLines = this.extractRelevantBodyLines(n.body, r.matchedHeading, r.matchedSection, mode);
+      // Use smart section extraction for better context
+      const bodyLines = r.matchedSection
+        ? r.matchedSection.split("\n")
+        : this.extractRelevantSections(n.body, query);
       for (const line of bodyLines) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith("![") || trimmed.startsWith("|")) continue;
@@ -1394,7 +1397,7 @@ export class VaultContext {
     await this.load();
     const mode = detectQueryMode(query);
     const results = this.selectResultsForMode(query, mode);
-    return this.buildPromptContext(results, mode);
+    return this.buildPromptContext(results, mode, query);
   }
 
   private selectResultsForMode(query: string, mode: QueryMode): VaultSearchResult[] {

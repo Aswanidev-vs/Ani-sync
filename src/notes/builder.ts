@@ -1,4 +1,4 @@
-import { slugify, slugifyAnchor, pickTitle } from "./slugify";
+import { slugify, slugifyTag, slugifyAnchor, pickTitle } from "./slugify";
 import type {
   AnilistCharacterEdge,
   AnilistRelationEdge,
@@ -12,6 +12,15 @@ import type {
   MediaListEntry,
   Viewer,
 } from "../types";
+
+/** Simple deterministic string hash (djb2) — produces consistent negative IDs for synthetic genre tags */
+function hashStr(s: string): number {
+  let hash = 5381;
+  for (let i = 0; i < s.length; i++) {
+    hash = (hash * 33) ^ s.charCodeAt(i);
+  }
+  return hash >>> 0; // unsigned 32-bit
+}
 
 export const SYNCED_AT_PLACEHOLDER = "__SYNCED_AT_PLACEHOLDER__";
 
@@ -431,6 +440,24 @@ export function buildArtifacts(built: BuiltArtifacts, syncedAt: string): NoteArt
   }
   for (const p of built.staff.values()) artifacts.push(buildStaffArtifact(p, syncedAt));
   for (const t of built.tags.values()) artifacts.push(buildTagArtifact(t, syncedAt));
+  // Create tag files for genres too — they link to Tags/ in media notes but no .md was created
+  const genreTagIds = new Set<number>();
+  const genreTagSlugs = new Set<string>();
+  for (const t of built.tags.values()) genreTagSlugs.add(slugifyTag(t.name));
+  for (const m of built.media) {
+    for (const g of m.genres) {
+      const slug = slugifyTag(g);
+      if (genreTagSlugs.has(slug)) continue; // already covered by a real AniList tag
+      genreTagSlugs.add(slug);
+      const syntheticId = -Math.abs(hashStr(slug));
+      if (genreTagIds.has(syntheticId)) continue;
+      genreTagIds.add(syntheticId);
+      artifacts.push(buildTagArtifact(
+        { id: syntheticId, name: g, rank: null },
+        syncedAt,
+      ));
+    }
+  }
 
   const mediaByStudioId = new Map<number, string[]>();
 
@@ -536,7 +563,7 @@ export function buildMediaArtifact(note: MediaNote, titleSlug: string, syncedAt:
     mediaStart: note.startDate,
     mediaEnd: note.endDate,
     genres: note.genres,
-    tags: note.tags.map((t) => t.name),
+    animeTags: note.tags.map((t) => t.name),
     studios: note.studios.map((s) => s.name),
     staff: note.staff.map((p) => p.name),
     characters: note.characters.map((c) => c.name),
@@ -600,7 +627,7 @@ export function buildMediaArtifact(note: MediaNote, titleSlug: string, syncedAt:
   if (note.genres.length) {
     body.push("## Genres");
     body.push("");
-    for (const g of note.genres) body.push(`- [[Tags/${slugify(g)}|${g}]]`);
+    for (const g of note.genres) body.push(`- [[Tags/${slugifyTag(g)}|${g}]]`);
     body.push("");
   }
   if (note.tags.length) {
@@ -608,7 +635,7 @@ export function buildMediaArtifact(note: MediaNote, titleSlug: string, syncedAt:
     body.push("");
     for (const t of note.tags) {
       const pct = t.rank != null ? ` (${t.rank}%)` : "";
-      body.push(`- [[Tags/${slugify(t.name)}|${t.name}]]${pct}`);
+      body.push(`- [[Tags/${slugifyTag(t.name)}|${t.name}]]${pct}`);
     }
     body.push("");
   }
@@ -702,7 +729,7 @@ export function buildTagArtifact(tag: TagArtifactData, syncedAt: string): NoteAr
   if (tag.rank != null) body.push(`**AniList rank:** ${tag.rank}%  `);
   return {
     folder: "Tags",
-    filename: `${slugify(tag.name)}.md`,
+    filename: `${slugifyTag(tag.name)}.md`,
     body: renderFrontmatter(fm) + "\n" + body.join("\n"),
     uniqueKey: `tag:${tag.id}`,
   };

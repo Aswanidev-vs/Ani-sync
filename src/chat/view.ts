@@ -306,6 +306,9 @@ export class ChatView extends ItemView {
         this.lastOutputDir = outputDir;
       }
 
+      // Save local reference in case invalidateVaultContext() is called during async ops
+      const vaultContext = this.vaultContext;
+
       // Create assistant bubble FIRST so errors are visible
       const msgEl = this.createAssistantBubble();
       const bubbleEl = msgEl.lastChild as HTMLDivElement;
@@ -314,8 +317,8 @@ export class ChatView extends ItemView {
 
       let context: string;
       try {
-        await this.vaultContext.load();
-        context = await this.vaultContext.buildContextForQuery(text);
+        await vaultContext.load();
+        context = await vaultContext.buildContextForQuery(text);
       } catch (vaultErr) {
         const errMsg = (vaultErr as Error).message ?? String(vaultErr);
         await this.renderMarkdown(bubbleEl, `Error loading library: ${errMsg}`, false);

@@ -968,7 +968,8 @@ export class VaultContext {
   private index: SearchIndex | null = null;
   private loadGeneration = 0;
   private indexCache: { nodes: VaultNode[]; timestamp: number } | null = null;
-  private fileHashes: Map<string, string> = new Map(); // file path → hash for incremental updates
+  private fileHashes: Map<string, string> = new Map();
+  private cacheFile = ".anisync-search-cache.json";
 
   constructor(app: App, basePath: string) {
     this.app = app;
@@ -996,15 +997,29 @@ export class VaultContext {
         // Try to load from in-memory cache first (instant)
         if (this.indexCache) {
           const age = Date.now() - this.indexCache.timestamp;
-          if (age < 5 * 60 * 1000) { // 5 minute in-memory cache
-            onProgress?.("Loading from cache...");
+          if (age < 5 * 60 * 1000) {
+            onProgress?.("Loading from memory cache...");
             this.nodes = this.indexCache.nodes;
             this.index = new SearchIndex();
             this.index.build(this.nodes);
             this.loaded = true;
-            onProgress?.("Index ready (cached) — " + this.nodes.length + " entries");
+            onProgress?.("Index ready (memory cached) — " + this.nodes.length + " entries");
             return;
           }
+        }
+
+        // Try to load from disk cache
+        const diskCache = await this.loadDiskCache();
+        if (diskCache) {
+          onProgress?.("Loading from disk cache...");
+          this.nodes = diskCache.nodes;
+          this.fileHashes = new Map(Object.entries(diskCache.fileHashes));
+          this.index = new SearchIndex();
+          this.index.build(this.nodes);
+          this.loaded = true;
+          this.indexCache = { nodes: this.nodes, timestamp: Date.now() };
+          onProgress?.("Index ready (disk cached) — " + this.nodes.length + " entries");
+          return;
         }
 
         const folder = this.app.vault.getAbstractFileByPath(this.basePath);
@@ -1013,64 +1028,21 @@ export class VaultContext {
         const files = this.getAllMarkdownFiles(folder);
         onProgress?.(`Found ${files.length} files`);
 
-        // Check for incremental updates (only re-index changed files)
+        // Full load from files
         const newNodes: VaultNode[] = [];
-        let filesToProcess = files;
-        let isIncremental = false;
-
-        if (this.nodes.length > 0 && this.fileHashes.size > 0) {
-          // Incremental mode: only process changed files
-          const changedFiles: TFile[] = [];
-          for (const file of files) {
-            const content = await this.app.vault.read(file);
-            const hash = this.simpleHash(content);
-            if (this.fileHashes.get(file.path) !== hash) {
-              changedFiles.push(file);
-            }
-          }
-
-          if (changedFiles.length > 0) {
-            isIncremental = true;
-            onProgress?.(`Incremental update: ${changedFiles.length} files changed`);
-            filesToProcess = changedFiles;
-          } else {
-            onProgress?.("No files changed, using cached index");
-            // Just rebuild index from existing nodes
-            this.index = new SearchIndex();
-            this.index.build(this.nodes);
-            this.loaded = true;
-            onProgress?.("Index ready (no changes) — " + this.nodes.length + " entries");
-            return;
-          }
-        }
-
-        // Parallel file reads (batch of 20)
         const BATCH = 20;
-        for (let i = 0; i < filesToProcess.length; i += BATCH) {
+        for (let i = 0; i < files.length; i += BATCH) {
           if (generation !== this.loadGeneration) return;
-          const batch = filesToProcess.slice(i, i + BATCH);
+          const batch = files.slice(i, i + BATCH);
           const nodes = await Promise.all(batch.map(f => this.parseFile(f)));
           for (const node of nodes) {
             if (node) newNodes.push(node);
           }
-          onProgress?.(`Read ${Math.min(i + BATCH, filesToProcess.length)}/${filesToProcess.length} files`);
+          onProgress?.(`Read ${Math.min(i + BATCH, files.length)}/${files.length} files`);
         }
 
         if (generation !== this.loadGeneration) return;
-
-        if (isIncremental) {
-          // Merge changed nodes into existing nodes
-          for (const node of newNodes) {
-            const existingIndex = this.nodes.findIndex(n => n.id === node.id);
-            if (existingIndex >= 0) {
-              this.nodes[existingIndex] = node; // Update existing
-            } else {
-              this.nodes.push(node); // Add new
-            }
-          }
-        } else {
-          this.nodes = newNodes;
-        }
+        this.nodes = newNodes;
 
         // Update file hashes
         for (const file of files) {
@@ -1078,7 +1050,10 @@ export class VaultContext {
           this.fileHashes.set(file.path, this.simpleHash(content));
         }
 
-        // Cache for future loads
+        // Save to disk cache
+        await this.saveDiskCache();
+
+        // Cache in memory
         this.indexCache = { nodes: this.nodes, timestamp: Date.now() };
 
         onProgress?.("Building search index...");
@@ -1094,12 +1069,48 @@ export class VaultContext {
     return this.loadingPromise;
   }
 
+  private async loadDiskCache(): Promise<{ nodes: VaultNode[]; fileHashes: Record<string, string>; timestamp: number } | null> {
+    try {
+      const adapter = this.app.vault.adapter;
+      const cachePath = `${this.basePath}/${this.cacheFile}`;
+      const exists = await adapter.exists(cachePath);
+      if (!exists) return null;
+
+      const content = await adapter.read(cachePath);
+      const cache = JSON.parse(content);
+
+      // Check if cache is less than 1 hour old
+      if (Date.now() - cache.timestamp > 60 * 60 * 1000) {
+        return null;
+      }
+
+      return cache;
+    } catch {
+      return null;
+    }
+  }
+
+  private async saveDiskCache(): Promise<void> {
+    try {
+      const adapter = this.app.vault.adapter;
+      const cachePath = `${this.basePath}/${this.cacheFile}`;
+      const cache = {
+        nodes: this.nodes,
+        fileHashes: Object.fromEntries(this.fileHashes),
+        timestamp: Date.now(),
+      };
+      await adapter.write(cachePath, JSON.stringify(cache));
+    } catch (e) {
+      console.error("[VaultContext] Failed to save cache:", e);
+    }
+  }
+
   private simpleHash(str: string): string {
     let hash = 0;
     for (let i = 0; i < str.length; i++) {
       const char = str.charCodeAt(i);
       hash = ((hash << 5) - hash) + char;
-      hash = hash & hash; // Convert to 32bit integer
+      hash = hash & hash;
     }
     return hash.toString(36);
   }

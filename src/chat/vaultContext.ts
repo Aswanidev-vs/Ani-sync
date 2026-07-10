@@ -57,6 +57,40 @@ const SYNONYM_MAP: Record<string, string[]> = {
   "sibling": ["brother", "sister"],
   "brother": ["sibling", "bro"],
   "sister": ["sibling", "sis"],
+  // Query patterns
+  "who voices": ["voice actor", "voiced by", "seiyuu"],
+  "who voiced": ["voice actor", "voiced by", "seiyuu"],
+  "voice of": ["voice actor", "voiced by"],
+  "voiced by": ["voice actor", "who voices"],
+  // Rating patterns
+  "score": ["rating", "rated", "rank"],
+  "rating": ["score", "rank"],
+  "rank": ["score", "rating"],
+  "top": ["best", "highest", "favorite"],
+  "favorite": ["best", "top", "beloved"],
+  "highest": ["best", "top", "maximum"],
+  "lowest": ["worst", "bottom", "minimum"],
+  // Status patterns
+  "plan to watch": ["planned", "want to watch"],
+  "plan to read": ["planned", "want to read"],
+  "planned": ["plan to watch", "plan to read"],
+  "currently watching": ["watching", "in progress"],
+  "currently reading": ["reading", "in progress"],
+  // Genre patterns
+  "romance": ["love", "romantic"],
+  "love": ["romance", "romantic"],
+  "action": ["fighting", "battle"],
+  "comedy": ["funny", "humor"],
+  "funny": ["comedy", "humor"],
+  "drama": ["emotional", "serious"],
+  "horror": ["scary", "frightening"],
+  "scary": ["horror", "frightening"],
+  "thriller": ["suspense", "tension"],
+  "mystery": ["detective", "puzzle"],
+  "fantasy": ["magic", "supernatural"],
+  "magic": ["fantasy", "supernatural"],
+  "sci-fi": ["science fiction", "space"],
+  "sports": ["athletic", "competition"],
 };
 
 const QUERY_STOP_WORDS = new Set([
@@ -114,6 +148,132 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   let intersection = 0;
   for (const t of a) if (b.has(t)) intersection++;
   return intersection / (a.size + b.size - intersection);
+}
+
+// Pure code vector search using TF-IDF + cosine similarity
+interface VectorEntry {
+  id: string;
+  vector: Map<string, number>;
+  norm: number;
+}
+
+class VectorSearch {
+  private entries: VectorEntry[] = [];
+  private idf: Map<string, number> = new Map();
+  private totalDocs = 0;
+
+  build(nodes: VaultNode[]): void {
+    this.entries = [];
+    this.idf.clear();
+    this.totalDocs = nodes.length;
+
+    // First pass: compute document frequencies
+    const df = new Map<string, number>();
+    for (const node of nodes) {
+      const text = `${node.title} ${node.body}`;
+      const terms = this.tokenize(text);
+      const uniqueTerms = new Set(terms);
+      for (const term of uniqueTerms) {
+        df.set(term, (df.get(term) ?? 0) + 1);
+      }
+    }
+
+    // Compute IDF
+    for (const [term, docCount] of df) {
+      this.idf.set(term, Math.log((this.totalDocs + 1) / (docCount + 1)) + 1);
+    }
+
+    // Second pass: build vectors
+    for (const node of nodes) {
+      const text = `${node.title} ${node.body}`;
+      this.addDocument(node.id, text);
+    }
+  }
+
+  private addDocument(id: string, text: string): void {
+    const terms = this.tokenize(text);
+    const tf = this.computeTF(terms);
+    const vector = new Map<string, number>();
+    let normSq = 0;
+
+    for (const [term, freq] of tf) {
+      const idfScore = this.idf.get(term) ?? 1;
+      const tfidf = freq * idfScore;
+      vector.set(term, tfidf);
+      normSq += tfidf * tfidf;
+    }
+
+    this.entries.push({ id, vector, norm: Math.sqrt(normSq) });
+  }
+
+  search(query: string, topK = 20): Array<{ id: string; score: number }> {
+    const queryTerms = this.tokenize(query);
+    const queryVector = this.buildQueryVector(queryTerms);
+    const results: Array<{ id: string; score: number }> = [];
+
+    for (const entry of this.entries) {
+      const score = this.cosineSimilarity(queryVector, entry);
+      if (score > 0.01) {
+        results.push({ id: entry.id, score });
+      }
+    }
+
+    return results
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
+  }
+
+  private tokenize(text: string): string[] {
+    return text.toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(t => t.length > 2 && !INDEX_STOP_WORDS.has(t));
+  }
+
+  private computeTF(terms: string[]): Map<string, number> {
+    const tf = new Map<string, number>();
+    for (const term of terms) {
+      tf.set(term, (tf.get(term) ?? 0) + 1);
+    }
+    const maxFreq = Math.max(...tf.values(), 1);
+    for (const [term, freq] of tf) {
+      tf.set(term, freq / maxFreq);
+    }
+    return tf;
+  }
+
+  private buildQueryVector(terms: string[]): Map<string, number> {
+    const vector = new Map<string, number>();
+    const tf = this.computeTF(terms);
+    let normSq = 0;
+
+    for (const [term, freq] of tf) {
+      const idfScore = this.idf.get(term) ?? 1;
+      const tfidf = freq * idfScore;
+      vector.set(term, tfidf);
+      normSq += tfidf * tfidf;
+    }
+
+    return vector;
+  }
+
+  private cosineSimilarity(queryVector: Map<string, number>, entry: VectorEntry): number {
+    let dotProduct = 0;
+    let queryNormSq = 0;
+
+    for (const [term, queryScore] of queryVector) {
+      const docScore = entry.vector.get(term);
+      if (docScore !== undefined) {
+        dotProduct += queryScore * docScore;
+      }
+      queryNormSq += queryScore * queryScore;
+    }
+
+    const queryNorm = Math.sqrt(queryNormSq);
+    if (queryNorm === 0 || entry.norm === 0) return 0;
+
+    return dotProduct / (queryNorm * entry.norm);
+  }
 }
 
 function expandQuery(query: string): string {
@@ -307,6 +467,8 @@ class SearchIndex {
   // Title and path lookup maps for O(1) link graph resolution
   private titleMap = new Map<string, VaultNode>();
   private pathMap = new Map<string, VaultNode>();
+  // Vector search for semantic similarity
+  private vectorSearch = new VectorSearch();
 
   build(nodes: VaultNode[]): void {
     this.entries = [];
@@ -318,6 +480,9 @@ class SearchIndex {
     this.titleMap.clear();
     this.pathMap.clear();
     this.totalDocs = nodes.length;
+
+    // Build vector search index
+    this.vectorSearch.build(nodes);
 
     // Pre-compute token frequencies for IDF (excluding stop words)
     const tokenDocCount = new Map<string, number>();
@@ -672,6 +837,19 @@ class SearchIndex {
         if (charIntent && entry.node.type === "media_characters") norm += 10;
         if (whoIntent && entry.node.type === "media_characters") norm += 12;
         if (norm > score) { score = norm; matchedField = "bm25"; }
+      }
+
+      // Vector search for semantic similarity
+      if (score < 60) {
+        const vectorResults = this.vectorSearch.search(q, 5);
+        const vectorMatch = vectorResults.find(r => r.id === entry.node.id);
+        if (vectorMatch) {
+          const vectorScore = Math.min(70, vectorMatch.score * 100);
+          if (vectorScore > score) {
+            score = vectorScore;
+            matchedField = "vector:semantic";
+          }
+        }
       }
 
       if (score < 15 && q.length >= 3) {
@@ -1174,7 +1352,76 @@ export class VaultContext {
       }
     }
 
+    // Include prelude (title, status, score) + matched section
     const prelude = lines.slice(0, Math.min(lines.length, 10)).filter((line) => line.startsWith("# ") || line.startsWith("**Status:**") || line.startsWith("**Score:**"));
     return [...prelude, "", ...lines.slice(start, end)];
+  }
+
+  // Extract sections that are most relevant to the query
+  private extractRelevantSections(body: string, query: string): string[] {
+    const lines = body.split("\n");
+    const queryLower = query.toLowerCase();
+    const queryTokens = tokenize(query);
+
+    // Find all sections with their relevance scores
+    const sections: Array<{ start: number; end: number; score: number; heading: string }> = [];
+    let currentStart = -1;
+    let currentHeading = "";
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.startsWith("## ")) {
+        if (currentStart >= 0) {
+          sections.push({ start: currentStart, end: i, score: 0, heading: currentHeading });
+        }
+        currentStart = i;
+        currentHeading = line.slice(3).trim();
+      }
+    }
+    if (currentStart >= 0) {
+      sections.push({ start: currentStart, end: lines.length, score: 0, heading: currentHeading });
+    }
+
+    // Score each section based on query relevance
+    for (const section of sections) {
+      const sectionText = lines.slice(section.start, section.end).join(" ").toLowerCase();
+      const sectionTokens = tokenize(sectionText);
+
+      // Token overlap score
+      const overlap = queryTokens.filter(t => sectionTokens.includes(t)).length;
+      const tokenScore = overlap / Math.max(1, queryTokens.length);
+
+      // Heading match score
+      const headingLower = section.heading.toLowerCase();
+      let headingScore = 0;
+      if (headingLower.includes(queryLower)) headingScore = 1;
+      else if (queryTokens.some(t => headingLower.includes(t))) headingScore = 0.5;
+
+      // Combine scores
+      section.score = tokenScore * 0.6 + headingScore * 0.4;
+    }
+
+    // Sort by score and take top sections
+    sections.sort((a, b) => b.score - a.score);
+    const topSections = sections.filter(s => s.score > 0.1).slice(0, 5);
+
+    if (topSections.length === 0) {
+      // Fallback: return first 50 lines
+      return lines.slice(0, 50);
+    }
+
+    // Collect lines from top sections
+    const result: string[] = [];
+    const prelude = lines.slice(0, Math.min(lines.length, 10)).filter(line => 
+      line.startsWith("# ") || line.startsWith("**Status:**") || line.startsWith("**Score:**")
+    );
+    result.push(...prelude);
+
+    for (const section of topSections) {
+      result.push("");
+      result.push(...lines.slice(section.start, section.end));
+    }
+
+    return result;
   }
 }

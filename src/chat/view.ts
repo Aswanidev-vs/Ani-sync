@@ -301,22 +301,30 @@ export class ChatView extends ItemView {
       }
 
       const outputDir = this.plugin.settings.outputDir;
-      if (this.vaultContext && this.lastOutputDir === outputDir && this.vaultContext.getLoadedCount() > 0) {
-        // already loaded
-      } else if (!this.vaultContext || this.lastOutputDir !== outputDir) {
+      if (!this.vaultContext || this.lastOutputDir !== outputDir) {
         this.vaultContext = new VaultContext(this.plugin.app, outputDir);
         this.lastOutputDir = outputDir;
-        await this.vaultContext.load();
-      } else {
-        await this.vaultContext.load();
       }
 
-      const context = await this.vaultContext.buildContextForQuery(text);
+      // Save local reference in case invalidateVaultContext() is called during async ops
+      const vaultContext = this.vaultContext;
 
+      // Create assistant bubble FIRST so errors are visible
       const msgEl = this.createAssistantBubble();
       const bubbleEl = msgEl.lastChild as HTMLDivElement;
       bubbleEl.innerHTML = '<span class="anisync-chat-thinking"><span class="anisync-thinking-dot"></span><span class="anisync-thinking-dot"></span><span class="anisync-thinking-dot"></span></span>';
       this.scrollDown();
+
+      let context: string;
+      try {
+        await vaultContext.load();
+        context = await vaultContext.buildContextForQuery(text);
+      } catch (vaultErr) {
+        const errMsg = (vaultErr as Error).message ?? String(vaultErr);
+        await this.renderMarkdown(bubbleEl, `Error loading library: ${errMsg}`, false);
+        this.scrollDown();
+        return;
+      }
 
       try {
         this.currentStream = {
@@ -381,9 +389,12 @@ export class ChatView extends ItemView {
 
   private stopStreaming(): void {
     if (!this.currentStream) return;
+    // Mark as complete first to stop typewriter from processing more tokens
+    this.currentStream.isComplete = true;
+    // Abort the stream
     this.streamAbortController?.abort();
-    this.finishStreaming();
-    if (!this.currentStream.animationId) this.flushCompletedStream();
+    // Flush any remaining content
+    this.flushCompletedStream();
     this.updateSendButton(false);
   }
 
@@ -396,7 +407,7 @@ export class ChatView extends ItemView {
   }
 
   private onTokenReceived(token: string): void {
-    if (!this.currentStream) return;
+    if (!this.currentStream || this.currentStream.isComplete) return;
     this.currentStream.fullContent += token;
     if (!this.currentStream.animationId) {
       this.currentStream.animationId = requestAnimationFrame(() => this.typewriterLoop());

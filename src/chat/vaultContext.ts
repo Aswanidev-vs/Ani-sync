@@ -150,7 +150,7 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   return intersection / (a.size + b.size - intersection);
 }
 
-// Optimized vector search using TF-IDF + cosine similarity
+// Optimized vector search using TF-IDF + cosine similarity (lazy build)
 interface VectorEntry {
   id: string;
   terms: string[];        // Stored terms for fast lookup
@@ -162,17 +162,28 @@ class VectorSearch {
   private entries: VectorEntry[] = [];
   private idf: Map<string, number> = new Map();
   private totalDocs = 0;
+  private built = false;
+  private nodes: VaultNode[] = [];
 
-  build(nodes: VaultNode[]): void {
+  // Store nodes but don't build index yet (lazy)
+  setNodes(nodes: VaultNode[]): void {
+    this.nodes = nodes;
+    this.totalDocs = nodes.length;
+    this.built = false;
+  }
+
+  // Build index on first query (lazy initialization)
+  private ensureBuilt(): void {
+    if (this.built || this.nodes.length === 0) return;
+
     this.entries = [];
     this.idf.clear();
-    this.totalDocs = nodes.length;
 
     // Single pass: compute DF and build vectors simultaneously
     const df = new Map<string, number>();
     const tempVectors: Array<{ id: string; tf: Map<string, number> }> = [];
 
-    for (const node of nodes) {
+    for (const node of this.nodes) {
       const text = `${node.title} ${node.body}`;
       const terms = this.tokenize(text);
       const tf = new Map<string, number>();
@@ -214,9 +225,14 @@ class VectorSearch {
 
       this.entries.push({ id, terms, tfidf, norm: Math.sqrt(normSq) });
     }
+
+    this.built = true;
   }
 
   search(query: string, topK = 20): Array<{ id: string; score: number }> {
+    // Lazy build on first query
+    this.ensureBuilt();
+
     const queryTerms = this.tokenize(query);
     const queryVector = this.buildQueryVector(queryTerms);
     const results: Array<{ id: string; score: number }> = [];
@@ -519,8 +535,8 @@ class SearchIndex {
     this.pathMap.clear();
     this.totalDocs = nodes.length;
 
-    // Build vector search index
-    this.vectorSearch.build(nodes);
+    // Set nodes for lazy vector build (built on first query)
+    this.vectorSearch.setNodes(nodes);
 
     // Pre-compute token frequencies for IDF (excluding stop words)
     const tokenDocCount = new Map<string, number>();
@@ -952,6 +968,7 @@ export class VaultContext {
   private index: SearchIndex | null = null;
   private loadGeneration = 0;
   private indexCache: { nodes: VaultNode[]; timestamp: number } | null = null;
+  private fileHashes: Map<string, string> = new Map(); // file path → hash for incremental updates
 
   constructor(app: App, basePath: string) {
     this.app = app;
@@ -976,10 +993,10 @@ export class VaultContext {
     const generation = ++this.loadGeneration;
     this.loadingPromise = (async () => {
       try {
-        // Try to load from cache first (instant)
+        // Try to load from in-memory cache first (instant)
         if (this.indexCache) {
           const age = Date.now() - this.indexCache.timestamp;
-          if (age < 5 * 60 * 1000) { // 5 minute cache
+          if (age < 5 * 60 * 1000) { // 5 minute in-memory cache
             onProgress?.("Loading from cache...");
             this.nodes = this.indexCache.nodes;
             this.index = new SearchIndex();
@@ -996,24 +1013,73 @@ export class VaultContext {
         const files = this.getAllMarkdownFiles(folder);
         onProgress?.(`Found ${files.length} files`);
 
+        // Check for incremental updates (only re-index changed files)
+        const newNodes: VaultNode[] = [];
+        let filesToProcess = files;
+        let isIncremental = false;
+
+        if (this.nodes.length > 0 && this.fileHashes.size > 0) {
+          // Incremental mode: only process changed files
+          const changedFiles: TFile[] = [];
+          for (const file of files) {
+            const content = await this.app.vault.read(file);
+            const hash = this.simpleHash(content);
+            if (this.fileHashes.get(file.path) !== hash) {
+              changedFiles.push(file);
+            }
+          }
+
+          if (changedFiles.length > 0) {
+            isIncremental = true;
+            onProgress?.(`Incremental update: ${changedFiles.length} files changed`);
+            filesToProcess = changedFiles;
+          } else {
+            onProgress?.("No files changed, using cached index");
+            // Just rebuild index from existing nodes
+            this.index = new SearchIndex();
+            this.index.build(this.nodes);
+            this.loaded = true;
+            onProgress?.("Index ready (no changes) — " + this.nodes.length + " entries");
+            return;
+          }
+        }
+
         // Parallel file reads (batch of 20)
         const BATCH = 20;
-        const newNodes: VaultNode[] = [];
-        for (let i = 0; i < files.length; i += BATCH) {
+        for (let i = 0; i < filesToProcess.length; i += BATCH) {
           if (generation !== this.loadGeneration) return;
-          const batch = files.slice(i, i + BATCH);
+          const batch = filesToProcess.slice(i, i + BATCH);
           const nodes = await Promise.all(batch.map(f => this.parseFile(f)));
           for (const node of nodes) {
             if (node) newNodes.push(node);
           }
-          onProgress?.(`Read ${Math.min(i + BATCH, files.length)}/${files.length} files (${newNodes.length} indexed)`);
+          onProgress?.(`Read ${Math.min(i + BATCH, filesToProcess.length)}/${filesToProcess.length} files`);
         }
 
         if (generation !== this.loadGeneration) return;
-        this.nodes = newNodes;
+
+        if (isIncremental) {
+          // Merge changed nodes into existing nodes
+          for (const node of newNodes) {
+            const existingIndex = this.nodes.findIndex(n => n.id === node.id);
+            if (existingIndex >= 0) {
+              this.nodes[existingIndex] = node; // Update existing
+            } else {
+              this.nodes.push(node); // Add new
+            }
+          }
+        } else {
+          this.nodes = newNodes;
+        }
+
+        // Update file hashes
+        for (const file of files) {
+          const content = await this.app.vault.read(file);
+          this.fileHashes.set(file.path, this.simpleHash(content));
+        }
 
         // Cache for future loads
-        this.indexCache = { nodes: newNodes, timestamp: Date.now() };
+        this.indexCache = { nodes: this.nodes, timestamp: Date.now() };
 
         onProgress?.("Building search index...");
         this.index = new SearchIndex();
@@ -1026,6 +1092,16 @@ export class VaultContext {
     })();
 
     return this.loadingPromise;
+  }
+
+  private simpleHash(str: string): string {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32bit integer
+    }
+    return hash.toString(36);
   }
 
   private getAllMarkdownFiles(folder: any): TFile[] {

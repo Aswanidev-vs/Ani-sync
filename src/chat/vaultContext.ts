@@ -877,9 +877,9 @@ class SearchIndex {
         if (norm > score) { score = norm; matchedField = "bm25"; }
       }
 
-      // Vector search for semantic similarity
+      // Vector search for semantic similarity (use expanded query with synonyms)
       if (score < 60) {
-        const vectorResults = this.vectorSearch.search(q, 5);
+        const vectorResults = this.vectorSearch.search(expandedQuery, 5);
         const vectorMatch = vectorResults.find(r => r.id === entry.node.id);
         if (vectorMatch) {
           const vectorScore = Math.min(70, vectorMatch.score * 100);

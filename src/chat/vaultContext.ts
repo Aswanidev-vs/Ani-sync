@@ -150,10 +150,11 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   return intersection / (a.size + b.size - intersection);
 }
 
-// Pure code vector search using TF-IDF + cosine similarity
+// Optimized vector search using TF-IDF + cosine similarity
 interface VectorEntry {
   id: string;
-  vector: Map<string, number>;
+  terms: string[];        // Stored terms for fast lookup
+  tfidf: number[];        // Parallel array of TF-IDF values
   norm: number;
 }
 
@@ -167,15 +168,26 @@ class VectorSearch {
     this.idf.clear();
     this.totalDocs = nodes.length;
 
-    // First pass: compute document frequencies
+    // Single pass: compute DF and build vectors simultaneously
     const df = new Map<string, number>();
+    const tempVectors: Array<{ id: string; tf: Map<string, number> }> = [];
+
     for (const node of nodes) {
       const text = `${node.title} ${node.body}`;
       const terms = this.tokenize(text);
-      const uniqueTerms = new Set(terms);
-      for (const term of uniqueTerms) {
+      const tf = new Map<string, number>();
+
+      // Count term frequencies
+      for (const term of terms) {
+        tf.set(term, (tf.get(term) ?? 0) + 1);
+      }
+
+      // Update document frequencies
+      for (const term of tf.keys()) {
         df.set(term, (df.get(term) ?? 0) + 1);
       }
+
+      tempVectors.push({ id: node.id, tf });
     }
 
     // Compute IDF
@@ -183,27 +195,25 @@ class VectorSearch {
       this.idf.set(term, Math.log((this.totalDocs + 1) / (docCount + 1)) + 1);
     }
 
-    // Second pass: build vectors
-    for (const node of nodes) {
-      const text = `${node.title} ${node.body}`;
-      this.addDocument(node.id, text);
+    // Build final vectors with precomputed IDF
+    for (const { id, tf } of tempVectors) {
+      const maxFreq = Math.max(...tf.values(), 1);
+      const terms: string[] = [];
+      const tfidf: number[] = [];
+      let normSq = 0;
+
+      for (const [term, freq] of tf) {
+        const normalizedTf = freq / maxFreq;
+        const idfScore = this.idf.get(term) ?? 1;
+        const score = normalizedTf * idfScore;
+
+        terms.push(term);
+        tfidf.push(score);
+        normSq += score * score;
+      }
+
+      this.entries.push({ id, terms, tfidf, norm: Math.sqrt(normSq) });
     }
-  }
-
-  private addDocument(id: string, text: string): void {
-    const terms = this.tokenize(text);
-    const tf = this.computeTF(terms);
-    const vector = new Map<string, number>();
-    let normSq = 0;
-
-    for (const [term, freq] of tf) {
-      const idfScore = this.idf.get(term) ?? 1;
-      const tfidf = freq * idfScore;
-      vector.set(term, tfidf);
-      normSq += tfidf * tfidf;
-    }
-
-    this.entries.push({ id, vector, norm: Math.sqrt(normSq) });
   }
 
   search(query: string, topK = 20): Array<{ id: string; score: number }> {
@@ -211,8 +221,16 @@ class VectorSearch {
     const queryVector = this.buildQueryVector(queryTerms);
     const results: Array<{ id: string; score: number }> = [];
 
+    // Convert query vector to parallel arrays for faster lookup
+    const qTerms: string[] = [];
+    const qValues: number[] = [];
+    for (const [term, score] of queryVector) {
+      qTerms.push(term);
+      qValues.push(score);
+    }
+
     for (const entry of this.entries) {
-      const score = this.cosineSimilarity(queryVector, entry);
+      const score = this.fastCosine(qTerms, qValues, entry);
       if (score > 0.01) {
         results.push({ id: entry.id, score });
       }
@@ -223,56 +241,76 @@ class VectorSearch {
       .slice(0, topK);
   }
 
-  private tokenize(text: string): string[] {
-    return text.toLowerCase()
-      .replace(/[^a-z0-9\s]/g, ' ')
-      .split(/\s+/)
-      .filter(t => t.length > 2 && !INDEX_STOP_WORDS.has(t));
+  private fastCosine(qTerms: string[], qValues: number[], entry: VectorEntry): number {
+    let dotProduct = 0;
+    let qNormSq = 0;
+
+    // Build lookup map for entry terms
+    const entryMap = new Map<string, number>();
+    for (let i = 0; i < entry.terms.length; i++) {
+      entryMap.set(entry.terms[i], entry.tfidf[i]);
+    }
+
+    // Compute dot product and query norm
+    for (let i = 0; i < qTerms.length; i++) {
+      const docScore = entryMap.get(qTerms[i]);
+      if (docScore !== undefined) {
+        dotProduct += qValues[i] * docScore;
+      }
+      qNormSq += qValues[i] * qValues[i];
+    }
+
+    const qNorm = Math.sqrt(qNormSq);
+    if (qNorm === 0 || entry.norm === 0) return 0;
+
+    return dotProduct / (qNorm * entry.norm);
   }
 
-  private computeTF(terms: string[]): Map<string, number> {
+  private tokenize(text: string): string[] {
+    // Optimized tokenizer - single pass, no regex
+    const result: string[] = [];
+    const lower = text.toLowerCase();
+    let word = '';
+    let wordLen = 0;
+
+    for (let i = 0; i < lower.length; i++) {
+      const c = lower.charCodeAt(i);
+      // a-z or 0-9
+      if ((c >= 97 && c <= 122) || (c >= 48 && c <= 57)) {
+        word += lower[i];
+        wordLen++;
+      } else if (wordLen > 0) {
+        // End of word
+        if (wordLen > 2 && !INDEX_STOP_WORDS.has(word)) {
+          result.push(word);
+        }
+        word = '';
+        wordLen = 0;
+      }
+    }
+
+    // Don't forget last word
+    if (wordLen > 2 && !INDEX_STOP_WORDS.has(word)) {
+      result.push(word);
+    }
+
+    return result;
+  }
+
+  private buildQueryVector(terms: string[]): Map<string, number> {
     const tf = new Map<string, number>();
     for (const term of terms) {
       tf.set(term, (tf.get(term) ?? 0) + 1);
     }
+
+    const vector = new Map<string, number>();
     const maxFreq = Math.max(...tf.values(), 1);
     for (const [term, freq] of tf) {
-      tf.set(term, freq / maxFreq);
-    }
-    return tf;
-  }
-
-  private buildQueryVector(terms: string[]): Map<string, number> {
-    const vector = new Map<string, number>();
-    const tf = this.computeTF(terms);
-    let normSq = 0;
-
-    for (const [term, freq] of tf) {
       const idfScore = this.idf.get(term) ?? 1;
-      const tfidf = freq * idfScore;
-      vector.set(term, tfidf);
-      normSq += tfidf * tfidf;
+      vector.set(term, (freq / maxFreq) * idfScore);
     }
 
     return vector;
-  }
-
-  private cosineSimilarity(queryVector: Map<string, number>, entry: VectorEntry): number {
-    let dotProduct = 0;
-    let queryNormSq = 0;
-
-    for (const [term, queryScore] of queryVector) {
-      const docScore = entry.vector.get(term);
-      if (docScore !== undefined) {
-        dotProduct += queryScore * docScore;
-      }
-      queryNormSq += queryScore * queryScore;
-    }
-
-    const queryNorm = Math.sqrt(queryNormSq);
-    if (queryNorm === 0 || entry.norm === 0) return 0;
-
-    return dotProduct / (queryNorm * entry.norm);
   }
 }
 
@@ -913,6 +951,7 @@ export class VaultContext {
   private loaded = false;
   private index: SearchIndex | null = null;
   private loadGeneration = 0;
+  private indexCache: { nodes: VaultNode[]; timestamp: number } | null = null;
 
   constructor(app: App, basePath: string) {
     this.app = app;
@@ -926,6 +965,7 @@ export class VaultContext {
     this.index = null;
     this.loaded = false;
     this.loadingPromise = null;
+    this.indexCache = null;
     this.loadGeneration++;
   }
 
@@ -936,16 +976,30 @@ export class VaultContext {
     const generation = ++this.loadGeneration;
     this.loadingPromise = (async () => {
       try {
+        // Try to load from cache first (instant)
+        if (this.indexCache) {
+          const age = Date.now() - this.indexCache.timestamp;
+          if (age < 5 * 60 * 1000) { // 5 minute cache
+            onProgress?.("Loading from cache...");
+            this.nodes = this.indexCache.nodes;
+            this.index = new SearchIndex();
+            this.index.build(this.nodes);
+            this.loaded = true;
+            onProgress?.("Index ready (cached) — " + this.nodes.length + " entries");
+            return;
+          }
+        }
+
         const folder = this.app.vault.getAbstractFileByPath(this.basePath);
         if (!folder) { onProgress?.("Folder not found"); return; }
 
         const files = this.getAllMarkdownFiles(folder);
         onProgress?.(`Found ${files.length} files`);
+
         // Parallel file reads (batch of 20)
         const BATCH = 20;
         const newNodes: VaultNode[] = [];
         for (let i = 0; i < files.length; i += BATCH) {
-          // Check if this load was invalidated
           if (generation !== this.loadGeneration) return;
           const batch = files.slice(i, i + BATCH);
           const nodes = await Promise.all(batch.map(f => this.parseFile(f)));
@@ -954,9 +1008,13 @@ export class VaultContext {
           }
           onProgress?.(`Read ${Math.min(i + BATCH, files.length)}/${files.length} files (${newNodes.length} indexed)`);
         }
-        // Check if this load was invalidated before finalizing
+
         if (generation !== this.loadGeneration) return;
         this.nodes = newNodes;
+
+        // Cache for future loads
+        this.indexCache = { nodes: newNodes, timestamp: Date.now() };
+
         onProgress?.("Building search index...");
         this.index = new SearchIndex();
         this.index.build(this.nodes);

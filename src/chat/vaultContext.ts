@@ -428,7 +428,48 @@ function parseConstraints(query: string): ParsedConstraints {
 
   const genreKeywords = ["romance", "action", "comedy", "drama", "fantasy", "slice of life", "thriller", "mystery", "horror", "sports", "sci fi", "supernatural"];
   const genres = genreKeywords.filter((genre) => q.includes(genre));
-  const scoreMatch = query.match(/\b(?:score|rated?|rating)\s*(?:above|over|>=|at least)?\s*(\d{1,2})\b/i);
+
+  // Score parsing (supports: "score 5", "score above 3", "score below 8", "rated 10")
+  let minScore: number | null = null;
+  let maxScore: number | null = null;
+  const scoreAboveMatch = query.match(/\b(?:score|rated?|rating)\s*(?:above|over|>=|at least|more than)\s*(\d{1,2})\b/i);
+  const scoreBelowMatch = query.match(/\b(?:score|rated?|rating)\s*(?:below|under|<=|at most|less than)\s*(\d{1,2})\b/i);
+  const scoreExactMatch = query.match(/\b(?:score|rated?|rating)\s*(?:of|is|=)?\s*(\d{1,2})\b/i);
+  if (scoreAboveMatch) minScore = Number(scoreAboveMatch[1]);
+  else if (scoreBelowMatch) maxScore = Number(scoreBelowMatch[1]);
+  else if (scoreExactMatch) { minScore = Number(scoreExactMatch[1]); maxScore = Number(scoreExactMatch[1]); }
+
+  // Episode parsing (supports: "100 episodes", "more than 50 episodes", "less than 12 episodes")
+  let minEpisodes: number | null = null;
+  let maxEpisodes: number | null = null;
+  const epAboveMatch = query.match(/\b(?:more than|over|>=|at least|above)\s*(\d+)\s*episodes?\b/i);
+  const epBelowMatch = query.match(/\b(?:less than|under|<=|at most|below)\s*(\d+)\s*episodes?\b/i);
+  const epExactMatch = query.match(/\b(\d+)\s*episodes?\b/i);
+  if (epAboveMatch) minEpisodes = Number(epAboveMatch[1]);
+  else if (epBelowMatch) maxEpisodes = Number(epBelowMatch[1]);
+  else if (epExactMatch) { minEpisodes = Number(epExactMatch[1]); maxEpisodes = Number(epExactMatch[1]); }
+
+  // Duration parsing (supports: "30 min", "more than 60 min")
+  let minDuration: number | null = null;
+  let maxDuration: number | null = null;
+  const durAboveMatch = query.match(/\b(?:more than|over|>=|at least|above)\s*(\d+)\s*(?:min|minutes?)\b/i);
+  const durBelowMatch = query.match(/\b(?:less than|under|<=|at most|below)\s*(\d+)\s*(?:min|minutes?)\b/i);
+  const durExactMatch = query.match(/\b(\d+)\s*(?:min|minutes?)\b/i);
+  if (durAboveMatch) minDuration = Number(durAboveMatch[1]);
+  else if (durBelowMatch) maxDuration = Number(durBelowMatch[1]);
+  else if (durExactMatch) { minDuration = Number(durExactMatch[1]); maxDuration = Number(durExactMatch[1]); }
+
+  // Year parsing (supports: "2024", "in 2023", "from 2020 to 2024")
+  let minYear: number | null = null;
+  let maxYear: number | null = null;
+  const yearRangeMatch = query.match(/\b(?:from|between)\s*(\d{4})\s*(?:to|and|-)\s*(\d{4})\b/i);
+  const yearInMatch = query.match(/\b(?:in|during|year)\s*(\d{4})\b/i);
+  const yearFromMatch = query.match(/\b(?:from|since|after)\s*(\d{4})\b/i);
+  const yearToMatch = query.match(/\b(?:to|until|before)\s*(\d{4})\b/i);
+  if (yearRangeMatch) { minYear = Number(yearRangeMatch[1]); maxYear = Number(yearRangeMatch[2]); }
+  else if (yearInMatch) { minYear = Number(yearInMatch[1]); maxYear = Number(yearInMatch[1]); }
+  else if (yearFromMatch) minYear = Number(yearFromMatch[1]);
+  else if (yearToMatch) maxYear = Number(yearToMatch[1]);
 
   return {
     typeFilter: /\banime\b/i.test(q) ? "anime" : /\bmanga\b/i.test(q) ? "manga" : null,
@@ -438,7 +479,14 @@ function parseConstraints(query: string): ParsedConstraints {
     studios: collectAfter([/\bstudio\s+(.+)/i, /\bby studio\s+(.+)/i]),
     voiceActors: collectAfter([/\bvoic(?:e|ed) actor\s+(.+)/i, /\bseiyuu\s+(.+)/i, /\bvoiced by\s+(.+)/i]),
     characters: collectAfter([/\bcharacter\s+(.+)/i]),
-    minScore: scoreMatch ? Number(scoreMatch[1]) : null,
+    minScore,
+    maxScore,
+    minEpisodes,
+    maxEpisodes,
+    minDuration,
+    maxDuration,
+    minYear,
+    maxYear,
   };
 }
 
@@ -502,6 +550,13 @@ interface ParsedConstraints {
   voiceActors: string[];
   characters: string[];
   minScore: number | null;
+  maxScore: number | null;
+  minEpisodes: number | null;
+  maxEpisodes: number | null;
+  minDuration: number | null;
+  maxDuration: number | null;
+  minYear: number | null;
+  maxYear: number | null;
 }
 
 class SearchIndex {
@@ -1311,6 +1366,57 @@ export class VaultContext {
       filteredResults = filteredResults.filter((r) => {
         const userScore = Number(r.node.frontmatter.score ?? -1);
         return !Number.isNaN(userScore) && userScore >= constraints.minScore!;
+      });
+    }
+
+    if (constraints.maxScore != null) {
+      filteredResults = filteredResults.filter((r) => {
+        const userScore = Number(r.node.frontmatter.score ?? 999);
+        return !Number.isNaN(userScore) && userScore <= constraints.maxScore!;
+      });
+    }
+
+    if (constraints.minEpisodes != null) {
+      filteredResults = filteredResults.filter((r) => {
+        const episodes = Number(r.node.frontmatter.episodes ?? 0);
+        return !Number.isNaN(episodes) && episodes >= constraints.minEpisodes!;
+      });
+    }
+
+    if (constraints.maxEpisodes != null) {
+      filteredResults = filteredResults.filter((r) => {
+        const episodes = Number(r.node.frontmatter.episodes ?? 9999);
+        return !Number.isNaN(episodes) && episodes <= constraints.maxEpisodes!;
+      });
+    }
+
+    if (constraints.minDuration != null) {
+      filteredResults = filteredResults.filter((r) => {
+        const duration = Number(r.node.frontmatter.duration ?? 0);
+        return !Number.isNaN(duration) && duration >= constraints.minDuration!;
+      });
+    }
+
+    if (constraints.maxDuration != null) {
+      filteredResults = filteredResults.filter((r) => {
+        const duration = Number(r.node.frontmatter.duration ?? 9999);
+        return !Number.isNaN(duration) && duration <= constraints.maxDuration!;
+      });
+    }
+
+    if (constraints.minYear != null) {
+      filteredResults = filteredResults.filter((r) => {
+        const startDate = String(r.node.frontmatter.mediaStart ?? "");
+        const year = startDate ? Number(startDate.substring(0, 4)) : 0;
+        return !Number.isNaN(year) && year >= constraints.minYear!;
+      });
+    }
+
+    if (constraints.maxYear != null) {
+      filteredResults = filteredResults.filter((r) => {
+        const startDate = String(r.node.frontmatter.mediaStart ?? "");
+        const year = startDate ? Number(startDate.substring(0, 4)) : 9999;
+        return !Number.isNaN(year) && year <= constraints.maxYear!;
       });
     }
 

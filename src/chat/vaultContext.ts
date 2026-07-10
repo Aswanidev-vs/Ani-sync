@@ -1135,8 +1135,10 @@ export class VaultContext {
           this.fileHashes.set(file.path, this.simpleHash(content));
         }
 
-        // Save to disk cache
-        await this.saveDiskCache();
+        // Save to disk cache (only if we have nodes)
+        if (this.nodes.length > 0) {
+          await this.saveDiskCache();
+        }
 
         // Cache in memory
         this.indexCache = { nodes: this.nodes, timestamp: Date.now() };
@@ -1163,6 +1165,11 @@ export class VaultContext {
 
       const content = await adapter.read(cachePath);
       const cache = JSON.parse(content);
+
+      // Validate cache
+      if (!cache.nodes || !Array.isArray(cache.nodes) || cache.nodes.length === 0) {
+        return null;
+      }
 
       // Check if cache is less than 1 hour old
       if (Date.now() - cache.timestamp > 60 * 60 * 1000) {

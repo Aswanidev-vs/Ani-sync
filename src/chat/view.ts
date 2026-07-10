@@ -305,14 +305,23 @@ export class ChatView extends ItemView {
         this.vaultContext = new VaultContext(this.plugin.app, outputDir);
         this.lastOutputDir = outputDir;
       }
-      await this.vaultContext.load();
 
-      const context = await this.vaultContext.buildContextForQuery(text);
-
+      // Create assistant bubble FIRST so errors are visible
       const msgEl = this.createAssistantBubble();
       const bubbleEl = msgEl.lastChild as HTMLDivElement;
       bubbleEl.innerHTML = '<span class="anisync-chat-thinking"><span class="anisync-thinking-dot"></span><span class="anisync-thinking-dot"></span><span class="anisync-thinking-dot"></span></span>';
       this.scrollDown();
+
+      let context: string;
+      try {
+        await this.vaultContext.load();
+        context = await this.vaultContext.buildContextForQuery(text);
+      } catch (vaultErr) {
+        const errMsg = (vaultErr as Error).message ?? String(vaultErr);
+        await this.renderMarkdown(bubbleEl, `Error loading library: ${errMsg}`, false);
+        this.scrollDown();
+        return;
+      }
 
       try {
         this.currentStream = {

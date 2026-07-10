@@ -17,6 +17,7 @@ interface StreamingMessage {
   isComplete: boolean;
   resolved: boolean;
   resolve: (value: void) => void;
+  lastRenderTime: number;
 }
 
 export class ChatView extends ItemView {
@@ -30,6 +31,9 @@ export class ChatView extends ItemView {
   private vaultContext: VaultContext | null = null;
   private lastOutputDir: string = "";
   private streamAbortController: AbortController | null = null;
+  private isSending = false;
+  private isClosed = false;
+  private userScrolledUp = false;
 
   constructor(leaf: WorkspaceLeaf, plugin: AnisyncPlugin) {
     super(leaf);
@@ -49,12 +53,12 @@ export class ChatView extends ItemView {
     const header = container.createDiv({ cls: "anisync-chat-header" });
     const title = header.createSpan({ cls: "anisync-chat-header-title" });
     title.textContent = "Ani-sync Chat";
-    this.newChatBtn = header.createEl("button", { cls: "anisync-chat-new-btn", title: "New chat" });
+    this.newChatBtn = header.createEl("button", { cls: "anisync-chat-new-btn", title: "New chat", attr: { "aria-label": "New chat" } });
     this.newChatBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>`;
     this.newChatBtn.onclick = () => this.clearChat();
 
     // Messages area
-    this.messagesEl = container.createDiv({ cls: "anisync-chat-messages" });
+    this.messagesEl = container.createDiv({ cls: "anisync-chat-messages", attr: { "role": "log", "aria-live": "polite", "aria-label": "Chat messages" } });
 
     // Input area
     const inputArea = container.createDiv({ cls: "anisync-chat-input-area" });
@@ -92,6 +96,14 @@ export class ChatView extends ItemView {
     } else {
       this.showWelcome("Loading your library...");
     }
+
+    // Track user scroll position to prevent force-scrolling when reading history
+    this.messagesEl.onscroll = () => {
+      const el = this.messagesEl;
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+      this.userScrolledUp = !atBottom;
+    };
+
     this.preloadVaultContext();
   }
 
@@ -108,6 +120,7 @@ export class ChatView extends ItemView {
   }
 
   async onClose(): Promise<void> {
+    this.isClosed = true;
     this.stopStreaming();
     if (this.currentStream?.animationId) {
       cancelAnimationFrame(this.currentStream.animationId);
@@ -115,6 +128,8 @@ export class ChatView extends ItemView {
   }
 
   private clearChat(): void {
+    // Abort any active stream before clearing
+    this.streamAbortController?.abort();
     this.currentStream = null;
     this.streamAbortController = null;
     this.messagesEl.empty();
@@ -141,103 +156,116 @@ export class ChatView extends ItemView {
   }
 
   private async handleSend(): Promise<void> {
-    const text = this.inputEl.value.trim();
-    if (!text) return;
-
-    const quick = this.getQuickResponse(text);
-    if (quick) {
-      this.addUserMessage(text);
-      this.addAssistantMessage(quick);
-      return;
-    }
-
-    this.addUserMessage(text);
-    this.inputEl.value = "";
-    this.updateSendButton(true);
-
-    const apiKey = this.plugin.settings.openrouterApiKey;
-    const model = this.plugin.settings.openrouterModel;
-    const availableModels = this.plugin.settings.openrouterAvailableModels;
-    if (!apiKey || !model) {
-      this.addAssistantMessage("Please configure your OpenRouter API key and select a model in **Settings → Ani-sync → OpenRouter AI**.");
-      this.updateSendButton(false);
-      return;
-    }
-
-    if (availableModels.length > 0 && !availableModels.some((m) => m.id === model)) {
-      this.addAssistantMessage("Your selected OpenRouter model is no longer valid for the current API key. Re-fetch models in **Settings -> Ani-sync -> OpenRouter AI** and pick one again.");
-      this.updateSendButton(false);
-      return;
-    }
-
-    const outputDir = this.plugin.settings.outputDir;
-    if (this.vaultContext && this.lastOutputDir === outputDir && this.vaultContext.getLoadedCount() > 0) {
-      // already loaded
-    } else if (!this.vaultContext || this.lastOutputDir !== outputDir) {
-      this.vaultContext = new VaultContext(this.plugin.app, outputDir);
-      this.lastOutputDir = outputDir;
-      await this.vaultContext.load();
-    } else {
-      await this.vaultContext.load();
-    }
-
-    const context = await this.vaultContext.buildContextForQuery(text);
-
-    const msgEl = this.createAssistantBubble();
-    const bubbleEl = msgEl.lastChild as HTMLDivElement;
-    bubbleEl.innerHTML = '<span class="anisync-chat-thinking"><span class="anisync-thinking-dot"></span><span class="anisync-thinking-dot"></span><span class="anisync-thinking-dot"></span></span>';
-    this.scrollDown();
+    if (this.isSending) return;
+    this.isSending = true;
 
     try {
-      this.currentStream = {
-        bubbleEl, fullContent: "", displayedContent: "",
-        animationId: null, isComplete: false, resolved: false, resolve: () => {},
-      };
-      this.streamAbortController = new AbortController();
+      const text = this.inputEl.value.trim();
+      if (!text) return;
 
-      await sendChatStream(
-        this.plugin.settings.openrouterApiKey,
-        this.plugin.settings.openrouterModel,
-        [
-          { role: "system", content: "You are an AniList assistant. Answer ONLY from the provided graph data context. If the answer isn't in the context, say so. Be concise and direct. Use markdown formatting for readability." },
-          { role: "user", content: `[Context]\n${context}\n\n[Question]\n${text}` },
-        ],
-        (token) => this.onTokenReceived(token),
-        this.streamAbortController.signal,
-      );
-
-      if (this.currentStream) {
-        await new Promise<void>((resolve) => {
-          if (!this.currentStream) { resolve(); return; }
-          this.currentStream.resolve = resolve;
-          this.finishStreaming();
-          if (!this.currentStream.animationId) this.flushCompletedStream();
-        });
+      const quick = this.getQuickResponse(text);
+      if (quick) {
+        this.addUserMessage(text);
+        this.addAssistantMessage(quick);
+        this.inputEl.value = "";
+        return;
       }
 
-      if (!this.currentStream?.fullContent.trim()) {
-        await this.renderMarkdown(bubbleEl, "No response received from the model.", false);
+      this.addUserMessage(text);
+      this.inputEl.value = "";
+      this.updateSendButton(true);
+
+      const apiKey = this.plugin.settings.openrouterApiKey;
+      const model = this.plugin.settings.openrouterModel;
+      const availableModels = this.plugin.settings.openrouterAvailableModels;
+      if (!apiKey || !model) {
+        this.addAssistantMessage("Please configure your OpenRouter API key and select a model in **Settings → Ani-sync → OpenRouter AI**.");
+        this.updateSendButton(false);
+        return;
       }
-    } catch (err) {
-      const msg = (err as Error).message ?? String(err);
-      if ((err as Error).name === "AbortError") {
-        // user stopped the response; keep any partial content that was already streamed
-      } else if (msg.includes("name not resolved") || msg.includes("ENOTFOUND") || msg.includes("DNS")) {
-        bubbleEl.innerHTML = "Cannot reach OpenRouter API — DNS resolution failed. Check your internet connection or the API endpoint.";
-      } else if (msg.includes("401") || msg.includes("unauthorized") || msg.includes("Unauthorized")) {
-        bubbleEl.innerHTML = "OpenRouter API key is invalid. Go to Settings → Ani-sync → OpenRouter AI and update your key.";
-      } else if (msg.includes("429") || msg.includes("rate limit")) {
-        bubbleEl.innerHTML = "OpenRouter rate limit exceeded. Wait a moment and try again.";
-      } else if (msg.includes("timeout") || msg.includes("TIMEOUT")) {
-        bubbleEl.innerHTML = "OpenRouter request timed out. The API might be slow right now — try again.";
+
+      if (availableModels.length > 0 && !availableModels.some((m) => m.id === model)) {
+        this.addAssistantMessage("Your selected OpenRouter model is no longer valid for the current API key. Re-fetch models in **Settings -> Ani-sync -> OpenRouter AI** and pick one again.");
+        this.updateSendButton(false);
+        return;
+      }
+
+      const outputDir = this.plugin.settings.outputDir;
+      if (this.vaultContext && this.lastOutputDir === outputDir && this.vaultContext.getLoadedCount() > 0) {
+        // already loaded
+      } else if (!this.vaultContext || this.lastOutputDir !== outputDir) {
+        this.vaultContext = new VaultContext(this.plugin.app, outputDir);
+        this.lastOutputDir = outputDir;
+        await this.vaultContext.load();
       } else {
-        bubbleEl.innerHTML = `Error: ${msg}`;
+        await this.vaultContext.load();
       }
+
+      const context = await this.vaultContext.buildContextForQuery(text);
+
+      const msgEl = this.createAssistantBubble();
+      const bubbleEl = msgEl.lastChild as HTMLDivElement;
+      bubbleEl.innerHTML = '<span class="anisync-chat-thinking"><span class="anisync-thinking-dot"></span><span class="anisync-thinking-dot"></span><span class="anisync-thinking-dot"></span></span>';
       this.scrollDown();
+
+      try {
+        this.currentStream = {
+          bubbleEl, fullContent: "", displayedContent: "",
+          animationId: null, isComplete: false, resolved: false, resolve: () => {},
+          lastRenderTime: 0,
+        };
+        this.streamAbortController = new AbortController();
+
+        await sendChatStream(
+          this.plugin.settings.openrouterApiKey,
+          this.plugin.settings.openrouterModel,
+          [
+            { role: "system", content: "You are an AniList assistant. Answer ONLY from the provided graph data context. If the answer isn't in the context, say so. Be concise and direct. Use markdown formatting for readability." },
+            { role: "user", content: `[Context]\n${context}\n\n[Question]\n${text}` },
+          ],
+          (token) => this.onTokenReceived(token),
+          this.streamAbortController.signal,
+        );
+
+        if (this.currentStream) {
+          await new Promise<void>((resolve) => {
+            if (!this.currentStream) { resolve(); return; }
+            this.currentStream.resolve = resolve;
+            this.finishStreaming();
+            if (!this.currentStream.animationId) this.flushCompletedStream();
+          });
+        }
+
+        if (!this.currentStream?.fullContent.trim()) {
+          await this.renderMarkdown(bubbleEl, "No response received from the model.", false);
+        }
+      } catch (err) {
+        if (this.isClosed) return;
+        const msg = (err as Error).message ?? String(err);
+        if ((err as Error).name === "AbortError") {
+          // user stopped the response; keep any partial content that was already streamed
+        } else if (msg.includes("name not resolved") || msg.includes("ENOTFOUND") || msg.includes("DNS")) {
+          bubbleEl.textContent = "Cannot reach OpenRouter API — DNS resolution failed. Check your internet connection or the API endpoint.";
+        } else if (msg.includes("401") || msg.includes("unauthorized") || msg.includes("Unauthorized")) {
+          bubbleEl.textContent = "OpenRouter API key is invalid. Go to Settings → Ani-sync → OpenRouter AI and update your key.";
+        } else if (msg.includes("429") || msg.includes("rate limit")) {
+          bubbleEl.textContent = "OpenRouter rate limit exceeded. Wait a moment and try again.";
+        } else if (msg.includes("timeout") || msg.includes("TIMEOUT")) {
+          bubbleEl.textContent = "OpenRouter request timed out. The API might be slow right now — try again.";
+        } else {
+          bubbleEl.textContent = `Error: ${msg}`;
+        }
+        this.scrollDown();
+      } finally {
+        if (!this.isClosed) {
+          this.updateSendButton(false);
+        }
+        this.streamAbortController = null;
+        this.currentStream = null;
+        this.isSending = false;
+      }
     } finally {
-      this.updateSendButton(false);
-      this.streamAbortController = null;
-      this.currentStream = null;
+      this.isSending = false;
     }
   }
 
@@ -253,6 +281,7 @@ export class ChatView extends ItemView {
     this.sendBtn.disabled = false;
     this.sendBtn.innerHTML = isStreaming ? STOP_ICON : SEND_ICON;
     this.sendBtn.title = isStreaming ? "Stop response" : "Send message";
+    this.sendBtn.setAttribute("aria-label", isStreaming ? "Stop response" : "Send message");
     this.sendBtn.classList.toggle("is-stop", isStreaming);
   }
 
@@ -285,12 +314,16 @@ export class ChatView extends ItemView {
       return;
     }
 
-    if (!s.bubbleEl.querySelector(".anisync-cursor")) {
-      s.bubbleEl.empty();
-      MarkdownRenderer.render(this.plugin.app, s.displayedContent, s.bubbleEl, "", this);
-      s.bubbleEl.createSpan({ cls: "anisync-cursor", text: "▋" });
-      this.scrollDown();
-    }
+    // Throttle re-renders to every 200ms to reduce CPU usage
+    const now = Date.now();
+    if (now - s.lastRenderTime < 200) return;
+    s.lastRenderTime = now;
+
+    // Always re-render markdown with the growing displayedContent
+    s.bubbleEl.empty();
+    MarkdownRenderer.render(this.plugin.app, s.displayedContent, s.bubbleEl, "", this);
+    s.bubbleEl.createSpan({ cls: "anisync-cursor", text: "▋" });
+    this.scrollDown();
   }
 
   private finishStreaming(): void {
@@ -310,7 +343,11 @@ export class ChatView extends ItemView {
 
   private async renderMarkdown(el: HTMLDivElement, content: string, showCursor = false): Promise<void> {
     el.empty();
-    await MarkdownRenderer.render(this.plugin.app, content, el, "", this);
+    try {
+      await MarkdownRenderer.render(this.plugin.app, content, el, "", this);
+    } catch {
+      el.textContent = content;
+    }
     if (showCursor && content.length > 0) {
       el.createSpan({ cls: "anisync-cursor", text: "▋" });
     }
@@ -348,7 +385,13 @@ export class ChatView extends ItemView {
 
   private removeWelcome(): void {
     const w = this.messagesEl.querySelector(".anisync-chat-welcome");
-    if (w) { w.remove(); this.messagesEl.style.backgroundImage = "none"; }
+    if (w) {
+      w.remove();
+      this.messagesEl.style.backgroundImage = "";
+      this.messagesEl.style.backgroundRepeat = "";
+      this.messagesEl.style.backgroundPosition = "";
+      this.messagesEl.style.backgroundSize = "";
+    }
   }
 
   private hasChatMessages(): boolean {
@@ -356,6 +399,8 @@ export class ChatView extends ItemView {
   }
 
   private scrollDown(): void {
+    // Only auto-scroll if user hasn't scrolled up manually
+    if (this.userScrolledUp) return;
     this.messagesEl.scrollTo({ top: this.messagesEl.scrollHeight, behavior: "smooth" });
   }
 

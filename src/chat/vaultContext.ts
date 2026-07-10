@@ -43,6 +43,20 @@ const SYNONYM_MAP: Record<string, string[]> = {
   "popular": ["trending", "most viewed"],
   "voice actor": ["seiyuu", "va", "cast"],
   "actor": ["seiyuu", "voice actor"],
+  // Family relationships
+  "kid": ["son", "daughter", "child", "children"],
+  "child": ["son", "daughter", "kid", "children"],
+  "children": ["son", "daughter", "kid", "child"],
+  "son": ["kid", "child", "children"],
+  "daughter": ["kid", "child", "children"],
+  "father": ["dad", "parent"],
+  "mother": ["mom", "parent"],
+  "parent": ["father", "mother", "dad", "mom"],
+  "husband": ["spouse", "partner"],
+  "wife": ["spouse", "partner"],
+  "sibling": ["brother", "sister"],
+  "brother": ["sibling", "bro"],
+  "sister": ["sibling", "sis"],
 };
 
 const QUERY_STOP_WORDS = new Set([

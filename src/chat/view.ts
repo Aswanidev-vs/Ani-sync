@@ -301,15 +301,11 @@ export class ChatView extends ItemView {
       }
 
       const outputDir = this.plugin.settings.outputDir;
-      if (this.vaultContext && this.lastOutputDir === outputDir && this.vaultContext.getLoadedCount() > 0) {
-        // already loaded
-      } else if (!this.vaultContext || this.lastOutputDir !== outputDir) {
+      if (!this.vaultContext || this.lastOutputDir !== outputDir) {
         this.vaultContext = new VaultContext(this.plugin.app, outputDir);
         this.lastOutputDir = outputDir;
-        await this.vaultContext.load();
-      } else {
-        await this.vaultContext.load();
       }
+      await this.vaultContext.load();
 
       const context = await this.vaultContext.buildContextForQuery(text);
 

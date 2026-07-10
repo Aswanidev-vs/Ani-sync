@@ -1070,6 +1070,21 @@ export class VaultContext {
     this.loadingPromise = null;
     this.indexCache = null;
     this.loadGeneration++;
+    // Also delete disk cache so next load is fresh
+    this.deleteDiskCache();
+  }
+
+  private async deleteDiskCache(): Promise<void> {
+    try {
+      const adapter = this.app.vault.adapter;
+      const cachePath = `${this.basePath}/${this.cacheFile}`;
+      const exists = await adapter.exists(cachePath);
+      if (exists) {
+        await adapter.remove(cachePath);
+      }
+    } catch {
+      // Ignore errors deleting cache
+    }
   }
 
   async load(onProgress?: (msg: string) => void): Promise<void> {

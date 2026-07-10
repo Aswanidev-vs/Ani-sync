@@ -383,8 +383,8 @@
 }
 
 .anisync-chat-new-btn {
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border-radius: 8px;
   border: 1px solid var(--background-modifier-border);
   background: var(--background-secondary);
@@ -984,22 +984,28 @@
 
 /* History button */
 .anisync-chat-history-btn {
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   border-radius: 8px;
-  border: none;
-  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
   color: var(--text-muted);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: color 0.15s, background 0.15s;
+  transition: color 0.15s, background 0.15s, transform 0.15s;
+  flex-shrink: 0;
 }
 
 .anisync-chat-history-btn:hover {
   color: var(--text-normal);
   background: var(--background-modifier-hover);
+  transform: scale(1.08);
+}
+
+.anisync-chat-history-btn:active {
+  transform: scale(0.95);
 }
 
 /* History dropdown */
@@ -1064,8 +1070,8 @@
 }
 
 .anisync-history-item-delete {
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   border-radius: 6px;
   border: none;
   background: transparent;
@@ -1074,7 +1080,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  opacity: 0;
+  opacity: 0.5;
   transition: opacity 0.1s, color 0.1s, background 0.1s;
   flex-shrink: 0;
 }
@@ -1120,7 +1126,7 @@
 .anisync-chat-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   padding: 10px 14px;
   border-bottom: 1px solid var(--background-modifier-border);
   position: relative;

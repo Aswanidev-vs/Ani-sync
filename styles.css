@@ -981,3 +981,147 @@
   text-align: center;
   font-style: italic;
 }
+
+/* History button */
+.anisync-chat-history-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
+}
+
+.anisync-chat-history-btn:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+/* History dropdown */
+.anisync-chat-history-dropdown {
+  position: absolute;
+  top: 44px;
+  right: 12px;
+  width: 280px;
+  max-height: 400px;
+  overflow-y: auto;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  z-index: 100;
+  padding: 6px;
+}
+
+.anisync-history-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.anisync-history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.anisync-history-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.anisync-history-item.is-active {
+  background: var(--background-modifier-active);
+}
+
+.anisync-history-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.anisync-history-item-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-normal);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.anisync-history-item-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.anisync-history-item-delete {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.1s, color 0.1s, background 0.1s;
+  flex-shrink: 0;
+}
+
+.anisync-history-item:hover .anisync-history-item-delete {
+  opacity: 1;
+}
+
+.anisync-history-item-delete:hover {
+  color: var(--color-error);
+  background: var(--background-modifier-hover);
+}
+
+.anisync-history-delete-all {
+  padding: 10px 12px;
+  margin-top: 4px;
+  border-top: 1px solid var(--background-modifier-border);
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-error);
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background 0.1s;
+}
+
+.anisync-history-delete-all:hover {
+  background: var(--background-modifier-hover);
+}
+
+/* Message timestamps */
+.anisync-chat-timestamp {
+  font-size: 10px;
+  color: var(--text-faint);
+  margin-top: 4px;
+  text-align: right;
+}
+
+.anisync-chat-message-user .anisync-chat-timestamp {
+  text-align: left;
+}
+
+/* Header positioning for dropdown */
+.anisync-chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  position: relative;
+}

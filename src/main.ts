@@ -334,6 +334,20 @@ export default class AnisyncPlugin extends Plugin {
     this.saveAll();
   }
 
+  deleteChatSession(sessionId: string): void {
+    this.chatSessions = this.chatSessions.filter(s => s.id !== sessionId);
+    if (this.activeChatId === sessionId) {
+      this.activeChatId = this.chatSessions.length > 0 ? this.chatSessions[0].id : null;
+    }
+    this.saveAll();
+  }
+
+  deleteAllChatSessions(): void {
+    this.chatSessions = [];
+    this.activeChatId = null;
+    this.saveAll();
+  }
+
   private generateSessionId(): string {
     return `chat_${Date.now()}_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
   }

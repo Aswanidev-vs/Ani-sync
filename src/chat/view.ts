@@ -26,6 +26,8 @@ export class ChatView extends ItemView {
   private inputEl!: HTMLTextAreaElement;
   private sendBtn!: HTMLButtonElement;
   private newChatBtn!: HTMLButtonElement;
+  private historyBtn!: HTMLButtonElement;
+  private historyDropdown!: HTMLDivElement;
   private loadingEl!: HTMLDivElement;
   private currentStream: StreamingMessage | null = null;
   private vaultContext: VaultContext | null = null;
@@ -57,6 +59,15 @@ export class ChatView extends ItemView {
     this.newChatBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>`;
     this.newChatBtn.onclick = () => this.clearChat();
 
+    // History button
+    this.historyBtn = header.createEl("button", { cls: "anisync-chat-history-btn", title: "Chat history", attr: { "aria-label": "Chat history" } });
+    this.historyBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>`;
+    this.historyBtn.onclick = () => this.toggleHistoryDropdown();
+
+    // History dropdown (hidden by default)
+    this.historyDropdown = container.createDiv({ cls: "anisync-chat-history-dropdown" });
+    this.historyDropdown.hide();
+
     // Messages area
     this.messagesEl = container.createDiv({ cls: "anisync-chat-messages", attr: { "role": "log", "aria-live": "polite", "aria-label": "Chat messages" } });
 
@@ -87,9 +98,9 @@ export class ChatView extends ItemView {
     if (messages.length > 0) {
       for (const msg of messages) {
         if (msg.role === "user") {
-          this.addUserMessage(msg.content, false);
+          this.addUserMessage(msg.content, false, msg.timestamp);
         } else {
-          this.addAssistantMessage(msg.content, false);
+          this.addAssistantMessage(msg.content, false, msg.timestamp);
         }
       }
       this.scrollDown();
@@ -105,6 +116,13 @@ export class ChatView extends ItemView {
     };
 
     this.preloadVaultContext();
+
+    // Close dropdown when clicking outside
+    this.registerDomEvent(document, "click", (e) => {
+      if (!this.historyDropdown.contains(e.target as Node) && e.target !== this.historyBtn) {
+        this.historyDropdown.hide();
+      }
+    });
   }
 
   private async preloadVaultContext(): Promise<void> {
@@ -136,6 +154,97 @@ export class ChatView extends ItemView {
     this.plugin.startNewChat();
     this.showWelcome();
     this.updateSendButton(false);
+  }
+
+  private toggleHistoryDropdown(): void {
+    if (this.historyDropdown.isShown()) {
+      this.historyDropdown.hide();
+    } else {
+      this.renderHistoryList();
+      this.historyDropdown.show();
+    }
+  }
+
+  private renderHistoryList(): void {
+    this.historyDropdown.empty();
+    const sessions = this.plugin.getAllChatSessions();
+
+    if (sessions.length === 0) {
+      const empty = this.historyDropdown.createDiv({ cls: "anisync-history-empty" });
+      empty.setText("No chat history yet");
+      return;
+    }
+
+    for (const session of sessions) {
+      const item = this.historyDropdown.createDiv({ cls: "anisync-history-item" });
+      if (session.id === this.plugin.activeChatId) {
+        item.addClass("is-active");
+      }
+
+      const info = item.createDiv({ cls: "anisync-history-item-info" });
+      const titleEl = info.createDiv({ cls: "anisync-history-item-title" });
+      titleEl.setText(session.title);
+      const metaEl = info.createDiv({ cls: "anisync-history-item-meta" });
+      const date = new Date(session.updatedAt);
+      const timeStr = date.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+      metaEl.setText(`${session.messages.length} messages · ${timeStr}`);
+
+      const deleteBtn = item.createEl("button", { cls: "anisync-history-item-delete", attr: { "aria-label": "Delete chat" } });
+      deleteBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`;
+      deleteBtn.onclick = (e) => {
+        e.stopPropagation();
+        this.deleteSession(session.id);
+      };
+
+      item.onclick = () => {
+        this.loadSession(session.id);
+        this.historyDropdown.hide();
+      };
+    }
+
+    // Delete all button
+    if (sessions.length > 1) {
+      const deleteAllBtn = this.historyDropdown.createDiv({ cls: "anisync-history-delete-all" });
+      deleteAllBtn.setText("Delete all history");
+      deleteAllBtn.onclick = () => this.deleteAllSessions();
+    }
+  }
+
+  private loadSession(sessionId: string): void {
+    this.plugin.loadChatSession(sessionId);
+    this.messagesEl.empty();
+    const messages = this.plugin.getActiveChatMessages();
+    for (const msg of messages) {
+      if (msg.role === "user") {
+        this.addUserMessage(msg.content, false);
+      } else {
+        this.addAssistantMessage(msg.content, false);
+      }
+    }
+    this.scrollDown();
+  }
+
+  private deleteSession(sessionId: string): void {
+    this.plugin.deleteChatSession(sessionId);
+    if (sessionId === this.plugin.activeChatId) {
+      const sessions = this.plugin.getAllChatSessions();
+      if (sessions.length > 0) {
+        this.loadSession(sessions[0].id);
+      } else {
+        this.plugin.startNewChat();
+        this.messagesEl.empty();
+        this.showWelcome();
+      }
+    }
+    this.renderHistoryList();
+  }
+
+  private deleteAllSessions(): void {
+    this.plugin.deleteAllChatSessions();
+    this.plugin.startNewChat();
+    this.messagesEl.empty();
+    this.showWelcome();
+    this.historyDropdown.hide();
   }
 
   private showWelcome(loadingText?: string): void {
@@ -354,22 +463,28 @@ export class ChatView extends ItemView {
     this.scrollDown();
   }
 
-  private addUserMessage(text: string, save = true): void {
+  private addUserMessage(text: string, save = true, timestamp?: number): void {
     this.removeWelcome();
     const msg = this.messagesEl.createDiv({ cls: "anisync-chat-message anisync-chat-message-user" });
     const bubble = msg.createDiv({ cls: "anisync-chat-bubble" });
     bubble.setText(text);
+    const timeEl = msg.createDiv({ cls: "anisync-chat-timestamp" });
+    const ts = timestamp ?? Date.now();
+    timeEl.setText(new Date(ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }));
     this.scrollDown();
     if (save) this.plugin.saveChatMessage("user", text);
   }
 
-  private addAssistantMessage(text: string, save = true): void {
+  private addAssistantMessage(text: string, save = true, timestamp?: number): void {
     this.removeWelcome();
     const msg = this.messagesEl.createDiv({ cls: "anisync-chat-message anisync-chat-message-assistant" });
     const icon = msg.createSpan({ cls: "anisync-chat-avatar" });
     icon.textContent = "AI";
     const bubble = msg.createDiv({ cls: "anisync-chat-bubble" });
     this.renderMarkdown(bubble, text, false);
+    const timeEl = msg.createDiv({ cls: "anisync-chat-timestamp" });
+    const ts = timestamp ?? Date.now();
+    timeEl.setText(new Date(ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }));
     if (save) this.plugin.saveChatMessage("assistant", text);
   }
 

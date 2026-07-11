@@ -612,7 +612,7 @@ export class SyncEngine {
           delete newPaths[k];
           return;
         }
-        this.onProgress?.(`  ! delete failed: ${sanitizeLog(String((e as Error)?.message ?? e))}`);
+        this.onProgress?.("  ! delete failed for " + vaultPath + ": " + sanitizeLog(String((e as Error)?.message ?? e)));
       }
     });
 

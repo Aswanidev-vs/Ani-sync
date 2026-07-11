@@ -241,7 +241,7 @@ export class SyncEngine {
             pageInfo: { hasNextPage: false },
           };
         } catch (err) {
-          this.onLog?.(`  ! character fetch failed for ${m.type}:${m.id}: ${(err as Error)?.message ?? String(err)}`);
+          this.onLog?.(`  ! character fetch failed for ${m.type}:${m.id}: ${sanitizeLog(String((err as Error)?.message ?? String(err)))}`);
           m.characters = undefined;
         }
       });
@@ -567,7 +567,7 @@ export class SyncEngine {
         newPaths[a.uniqueKey] = vaultPath;
       } catch (e) {
         stats.failed += 1;
-        this.onLog?.(`  ! write failed for ${vaultPath}: ${(e as Error)?.message ?? e}`);
+        this.onLog?.("  ! write failed for " + vaultPath + ": " + sanitizeLog(String((e as Error)?.message ?? e)));
       } finally {
         writtenCount += 1;
         foldersWithWrites.add(a.folder);
@@ -612,7 +612,7 @@ export class SyncEngine {
           delete newPaths[k];
           return;
         }
-        this.onProgress?.(`  ! delete failed for ${vaultPath}: ${(e as Error)?.message}`);
+        this.onProgress?.("  ! delete failed for " + vaultPath + ": " + sanitizeLog(String((e as Error)?.message ?? e)));
       }
     });
 
@@ -621,83 +621,19 @@ export class SyncEngine {
   }
 
   private async cleanupVoiceActorArtifacts(stats: SyncStats): Promise<void> {
-    const paths = this.cache?.paths ?? {};
-    const noteHashes = this.cache?.noteHashes ?? {};
-    const toDelete: { k: string; vaultPath: string }[] = [];
-
-    for (const [key, vaultPath] of Object.entries(paths)) {
-      if (key.startsWith("va:") && vaultPath.includes("/Voice-Actors/")) {
-        toDelete.push({ k: key, vaultPath });
-      }
-    }
-
-    if (toDelete.length === 0) return;
-
-    const deletedKeys: string[] = [];
-    let removed = 0;
-    await pMapLimit(toDelete, DELETE_CONCURRENCY, async ({ k, vaultPath }) => {
-      if (this.cancelled) return;
-      try {
-        await this.vault.delete(vaultPath);
-        stats.deleted += 1;
-        deletedKeys.push(k);
-        removed += 1;
-      } catch (e) {
-        if (/404/.test(String((e as Error)?.message))) {
-          deletedKeys.push(k);
-          removed += 1;
-        } else {
-          this.onLog?.(`  ! cleanup failed for ${vaultPath}: ${(e as Error)?.message ?? e}`);
-        }
-      }
-    });
-    for (const k of deletedKeys) {
-      delete noteHashes[k];
-      delete paths[k];
-    }
-
-    if (removed) this.onProgress?.(`  Voice-Actor clean-up: removed ${removed} file(s)`);
-    this.cache = { ...this.cache, noteHashes, paths };
+    await this.cleanupByPredicate(
+      stats,
+      (key, vaultPath) => key.startsWith("va:") && vaultPath.includes("/Voice-Actors/"),
+      "Voice-Actor",
+    );
   }
 
   private async cleanupLegacyCharacterArtifacts(stats: SyncStats): Promise<void> {
-    const paths = this.cache?.paths ?? {};
-    const noteHashes = this.cache?.noteHashes ?? {};
-    const toDelete: { k: string; vaultPath: string }[] = [];
-
-    for (const [key, vaultPath] of Object.entries(paths)) {
-      if (key.startsWith("character:") && vaultPath.startsWith("Characters/")) {
-        toDelete.push({ k: key, vaultPath });
-      }
-    }
-
-    if (toDelete.length === 0) return;
-
-    const deletedKeys: string[] = [];
-    let removed = 0;
-    await pMapLimit(toDelete, DELETE_CONCURRENCY, async ({ k, vaultPath }) => {
-      if (this.cancelled) return;
-      try {
-        await this.vault.delete(vaultPath);
-        stats.deleted += 1;
-        deletedKeys.push(k);
-        removed += 1;
-      } catch (e) {
-        if (/404/.test(String((e as Error)?.message))) {
-          deletedKeys.push(k);
-          removed += 1;
-        } else {
-          this.onLog?.(`  ! legacy character cleanup failed for ${vaultPath}: ${(e as Error)?.message ?? e}`);
-        }
-      }
-    });
-    for (const k of deletedKeys) {
-      delete noteHashes[k];
-      delete paths[k];
-    }
-
-    if (removed) this.onProgress?.(`  Legacy character clean-up: removed ${removed} file(s)`);
-    this.cache = { ...this.cache, noteHashes, paths };
+    await this.cleanupByPredicate(
+      stats,
+      (key, vaultPath) => key.startsWith("character:") && vaultPath.startsWith("Characters/"),
+      "Legacy character",
+    );
   }
 
   private async updateStudioArtifacts(
@@ -763,7 +699,7 @@ export class SyncEngine {
         paths[uniqueKey] = vaultPath;
         updated += 1;
       } catch (e) {
-        this.onLog?.(`  ! studio update failed for ${data.name}: ${(e as Error)?.message ?? e}`);
+        this.onLog?.(`  ! studio update failed for ${data.name}: ${sanitizeLog(String((e as Error)?.message ?? e))}`);
         stats.failed += 1;
       }
     }
@@ -778,16 +714,29 @@ export class SyncEngine {
     prefix: "studio:" | "staff:",
     label: string,
   ): Promise<void> {
+    await this.cleanupByPredicate(
+      stats,
+      (key) => {
+        if (!key.startsWith(prefix)) return false;
+        const id = Number(key.slice(prefix.length));
+        return !activeIds.has(id);
+      },
+      label,
+    );
+  }
+
+  private async cleanupByPredicate(
+    stats: SyncStats,
+    predicate: (key: string, vaultPath: string) => boolean,
+    label: string,
+  ): Promise<void> {
     const paths = this.cache?.paths ?? {};
     const noteHashes = this.cache?.noteHashes ?? {};
     const toDelete: { k: string; vaultPath: string }[] = [];
 
     for (const [key, vaultPath] of Object.entries(paths)) {
-      if (key.startsWith(prefix)) {
-        const id = Number(key.slice(prefix.length));
-        if (!activeIds.has(id)) {
-          toDelete.push({ k: key, vaultPath });
-        }
+      if (predicate(key, vaultPath)) {
+        toDelete.push({ k: key, vaultPath });
       }
     }
 
@@ -807,7 +756,7 @@ export class SyncEngine {
           deletedKeys.push(k);
           removed += 1;
         } else {
-          this.onLog?.(`  ! ${label.toLowerCase()} cleanup failed for ${vaultPath}: ${(e as Error)?.message ?? e}`);
+          this.onLog?.("  ! " + label.toLowerCase() + " cleanup failed for " + vaultPath + ": " + sanitizeLog(String((e as Error)?.message ?? e)));
         }
       }
     });
@@ -850,6 +799,10 @@ interface PreparedArtifact {
   noteHash: string;
   bodyForHash: string;
   skipped?: boolean;
+}
+
+function sanitizeLog(s: string): string {
+  return s.replace(/[\r\n\t]/g, " ").slice(0, 200);
 }
 
 function countEntries(lists: MediaList[]): number {

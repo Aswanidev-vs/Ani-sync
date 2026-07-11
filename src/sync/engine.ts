@@ -4,7 +4,8 @@ import {
   flattenSummaryToMap,
 } from "../anilist/queries";
 import type { AnilistCharacterConnection, AnilistCharacterEdge, AnilistVoiceActor, MediaDetail, MediaList } from "../types";
-import { buildAll, buildArtifacts, SYNCED_AT_PLACEHOLDER } from "../notes/builder";
+import { buildAll, buildArtifacts, buildStudioArtifact, SYNCED_AT_PLACEHOLDER } from "../notes/builder";
+import { pickTitle } from "../notes/slugify";
 import { extractHashMarker, stripHashMarker, sha256Hex } from "./hash";
 import { AnisyncCache, diffSummary } from "./cache";
 
@@ -132,6 +133,24 @@ export class SyncEngine {
         }
       }
 
+      // Identify studios affected by removed media (studios that still have remaining media)
+      const affectedStudioIds = new Set<number>();
+      for (const removedKey of removed) {
+        const removedDetail = cachedDetails.get(removedKey);
+        if (!removedDetail) continue;
+        for (const edge of removedDetail.studios?.edges ?? []) {
+          if (edge?.node && currentStudioIds.has(edge.node.id)) {
+            affectedStudioIds.add(edge.node.id);
+          }
+        }
+      }
+
+      // Rebuild and update affected studio artifacts with refreshed Works lists
+      if (affectedStudioIds.size > 0) {
+        this.onLog?.(`Updating ${affectedStudioIds.size} studio note(s) with refreshed Works lists`);
+        await this.updateStudioArtifacts(affectedStudioIds, detailsMap, removalStats);
+      }
+
       // Clean up orphaned studio/staff artifacts
       await this.cleanupSharedArtifacts(removalStats, currentStudioIds, "studio:", "Studio");
       await this.cleanupSharedArtifacts(removalStats, currentStaffIds, "staff:", "Staff");
@@ -250,7 +269,8 @@ export class SyncEngine {
 
     onProgress("Pre-computing hashes...", 57);
     const changedKeys = new Set(changed);
-    const prepared = await this.prepareArtifacts(artifacts, changedKeys, mediaToStudios, mediaToStaff, mediaToTags);
+    const removedKeys = new Set(removed);
+    const prepared = await this.prepareArtifacts(artifacts, changedKeys, removedKeys, cachedDetails, mediaToStudios, mediaToStaff, mediaToTags);
     const skippedCount = prepared.filter(p => p.skipped).length;
     const toProcess = prepared.length - skippedCount;
     onProgress(`Hashes computed: ${toProcess} new/changed (${skippedCount} cached)`, 60);
@@ -403,6 +423,8 @@ export class SyncEngine {
   private async prepareArtifacts(
     artifacts: ReturnType<typeof buildArtifacts>,
     changedKeys: Set<string>,
+    removedKeys: Set<string>,
+    cachedDetails: Map<string, MediaDetail>,
     mediaToStudios: Map<string, Set<number>>,
     mediaToStaff: Map<string, Set<number>>,
     mediaToTags: Map<string, Set<number>>,
@@ -424,12 +446,26 @@ export class SyncEngine {
       if (tags) for (const id of tags) changedTagIds.add(id);
     }
 
+    // Also track studios/staff affected by removed media
+    const removedStudioIds = new Set<number>();
+    const removedStaffIds = new Set<number>();
+    for (const removedKey of removedKeys) {
+      const detail = cachedDetails.get(removedKey);
+      if (!detail) continue;
+      for (const edge of detail.studios?.edges ?? []) {
+        if (edge?.node) removedStudioIds.add(edge.node.id);
+      }
+      for (const edge of detail.staff?.edges ?? []) {
+        if (edge?.node) removedStaffIds.add(edge.node.id);
+      }
+    }
+
     for (let i = 0; i < artifacts.length; i++) {
       const a = artifacts[i];
       const cachedHash = cachedHashes[a.uniqueKey];
 
       // Skip hashing if: has cached hash AND source not changed
-      if (cachedHash != null && !artifactNeedsUpdate(a.uniqueKey, changedKeys, changedStudioIds, changedStaffIds, changedTagIds)) {
+      if (cachedHash != null && !artifactNeedsUpdate(a.uniqueKey, changedKeys, changedStudioIds, changedStaffIds, changedTagIds, removedStudioIds, removedStaffIds)) {
         result[i] = { artifact: a, bodyForHash: "", noteHash: cachedHash, skipped: true };
         continue;
       }
@@ -664,6 +700,78 @@ export class SyncEngine {
     this.cache = { ...this.cache, noteHashes, paths };
   }
 
+  private async updateStudioArtifacts(
+    affectedStudioIds: Set<number>,
+    detailsMap: Map<string, MediaDetail>,
+    stats: SyncStats,
+  ): Promise<void> {
+    const paths = this.cache?.paths ?? {};
+    const noteHashes = this.cache?.noteHashes ?? {};
+
+    // Build studio data and works lists from remaining media
+    const studioData = new Map<number, { name: string; siteUrl?: string | null; isAnimationStudio: boolean; works: string[] }>();
+    for (const detail of detailsMap.values()) {
+      const mediaTitle = pickTitle(detail.title);
+      for (const edge of detail.studios?.edges ?? []) {
+        if (!edge?.node || !affectedStudioIds.has(edge.node.id)) continue;
+        const studioId = edge.node.id;
+        if (!studioData.has(studioId)) {
+          studioData.set(studioId, {
+            name: edge.node.name,
+            siteUrl: edge.node.siteUrl,
+            isAnimationStudio: edge.node.isAnimationStudio,
+            works: [],
+          });
+        }
+        const studio = studioData.get(studioId)!;
+        if (!studio.works.includes(mediaTitle)) {
+          studio.works.push(mediaTitle);
+        }
+      }
+    }
+
+    // Rebuild and write each affected studio artifact
+    let updated = 0;
+    for (const [studioId, data] of studioData) {
+      if (this.cancelled) break;
+      const uniqueKey = `studio:${studioId}`;
+      const artifact = buildStudioArtifact(
+        { id: studioId, name: data.name, siteUrl: data.siteUrl, isAnimationStudio: data.isAnimationStudio },
+        data.works,
+        this.syncedAt,
+      );
+
+      try {
+        // Compute new hash
+        const bodyForHash = stripHashMarker(artifact.body.split(SYNCED_AT_PLACEHOLDER).join(this.syncedAt));
+        const noteHash = await sha256Hex(bodyForHash);
+        const cachedHash = noteHashes[uniqueKey];
+
+        // Skip if unchanged
+        if (cachedHash === noteHash) {
+          continue;
+        }
+
+        // Determine vault path
+        const vaultPath = normalizePath(`${this.outputDir}/${artifact.folder}/${artifact.filename}`);
+
+        // Write the updated artifact
+        const finalContent = `${bodyForHash.replace(/\s+$/g, "")}\n\n<!-- anilist-hash: ${noteHash} -->\n`;
+        await this.vault.write(vaultPath, finalContent);
+        stats.updated += 1;
+        noteHashes[uniqueKey] = noteHash;
+        paths[uniqueKey] = vaultPath;
+        updated += 1;
+      } catch (e) {
+        this.onLog?.(`  ! studio update failed for ${data.name}: ${(e as Error)?.message ?? e}`);
+        stats.failed += 1;
+      }
+    }
+
+    if (updated) this.onProgress?.(`  Studio updates: ${updated} note(s) refreshed`);
+    this.cache = { ...this.cache, noteHashes, paths };
+  }
+
   private async cleanupSharedArtifacts(
     stats: SyncStats,
     activeIds: Set<number>,
@@ -754,6 +862,8 @@ function artifactNeedsUpdate(
   changedStudioIds: Set<number>,
   changedStaffIds: Set<number>,
   changedTagIds: Set<number>,
+  removedStudioIds: Set<number>,
+  removedStaffIds: Set<number>,
 ): boolean {
   // Media artifacts: uniqueKey IS the media key
   if (changedKeys.has(uniqueKey)) return true;
@@ -773,21 +883,24 @@ function artifactNeedsUpdate(
   if (uniqueKey === "profile" || uniqueKey === "voice-actor-index") return true;
 
   // Studio artifacts: studio:{id}
+  // Update if the studio had media changed OR if any linked media was removed
   if (uniqueKey.startsWith("studio:")) {
     const studioId = Number(uniqueKey.slice("studio:".length));
-    return changedStudioIds.has(studioId);
+    return changedStudioIds.has(studioId) || removedStudioIds.has(studioId);
   }
 
   // Staff artifacts: staff:{id}
+  // Update if the staff had media changed OR if any linked media was removed
   if (uniqueKey.startsWith("staff:")) {
     const staffId = Number(uniqueKey.slice("staff:".length));
-    return changedStaffIds.has(staffId);
+    return changedStaffIds.has(staffId) || removedStaffIds.has(staffId);
   }
 
   // Tag artifacts: tag:{id} or tag:-{hash}
   if (uniqueKey.startsWith("tag:")) {
     const tagId = Number(uniqueKey.slice("tag:".length));
-    if (!Number.isFinite(tagId)) return true; // synthetic tag
+    if (tagId < 0) return true; // synthetic tag (negative ID)
+    if (!Number.isFinite(tagId)) return true; // invalid/malformed ID
     return changedTagIds.has(tagId);
   }
 

@@ -133,6 +133,10 @@ export interface BuiltArtifacts {
   relations: { id: number; type: "ANIME" | "MANGA"; title: string; relationType: string }[];
   animeLists: MediaList[];
   mangaLists: MediaList[];
+  // Reverse mappings: mediaKey -> Set of shared entity IDs
+  mediaToStudios: Map<string, Set<number>>;    // "ANIME:123" -> Set<studioId>
+  mediaToStaff: Map<string, Set<number>>;      // "ANIME:123" -> Set<staffId>
+  mediaToTags: Map<string, Set<number>>;       // "ANIME:123" -> Set<tagId>
 }
 
 export interface NoteArtifact {
@@ -154,6 +158,9 @@ export function buildAll(
   const characters = new Map<number, CharacterArtifactData>();
   const voiceActors = new Map<number, VoiceActorArtifactData>();
   const relations: { id: number; type: "ANIME" | "MANGA"; title: string; relationType: string }[] = [];
+  const mediaToStudios = new Map<string, Set<number>>();
+  const mediaToStaff = new Map<string, Set<number>>();
+  const mediaToTags = new Map<string, Set<number>>();
 
   const mediaNotes: MediaNote[] = [];
 
@@ -161,8 +168,9 @@ export function buildAll(
     for (const entry of list.entries as MediaListEntry[]) {
       const detail = details.get(`${entry.media.type}:${entry.media.id}`);
       if (!detail) continue;
+      const mediaKey = `${entry.media.type}:${entry.media.id}`;
       mediaNotes.push(buildMediaNote(entry, detail, list.name));
-      collectFromDetail(detail, studios, staff, tags, characters, voiceActors, relations);
+      collectFromDetail(detail, studios, staff, tags, characters, voiceActors, relations, mediaKey, mediaToStudios, mediaToStaff, mediaToTags);
     }
   }
 
@@ -177,6 +185,9 @@ export function buildAll(
     relations,
     animeLists,
     mangaLists,
+    mediaToStudios,
+    mediaToStaff,
+    mediaToTags,
   };
 }
 
@@ -192,9 +203,15 @@ function collectFromDetail(
   characters: Map<number, CharacterArtifactData>,
   voiceActors: Map<number, VoiceActorArtifactData>,
   relations: { id: number; type: "ANIME" | "MANGA"; title: string; relationType: string }[],
+  mediaKey: string,
+  mediaToStudios: Map<string, Set<number>>,
+  mediaToStaff: Map<string, Set<number>>,
+  mediaToTags: Map<string, Set<number>>,
 ): void {
+  const studioIds = new Set<number>();
   for (const edge of detail.studios?.edges ?? []) {
     if (!edge?.node) continue;
+    studioIds.add(edge.node.id);
     if (!studios.has(edge.node.id)) {
       studios.set(edge.node.id, {
         id: edge.node.id,
@@ -204,8 +221,12 @@ function collectFromDetail(
       });
     }
   }
+  if (studioIds.size > 0) mediaToStudios.set(mediaKey, studioIds);
+
+  const staffIds = new Set<number>();
   for (const edge of detail.staff?.edges ?? []) {
     if (!edge?.node) continue;
+    staffIds.add(edge.node.id);
     const role = edge.role ?? "";
     if (!staff.has(edge.node.id)) {
       staff.set(edge.node.id, {
@@ -224,9 +245,14 @@ function collectFromDetail(
       }
     }
   }
+  if (staffIds.size > 0) mediaToStaff.set(mediaKey, staffIds);
+
+  const tagIds = new Set<number>();
   for (const t of detail.tags ?? []) {
+    tagIds.add(t.id);
     if (!tags.has(t.id)) tags.set(t.id, { id: t.id, name: t.name, rank: t.rank });
   }
+  if (tagIds.size > 0) mediaToTags.set(mediaKey, tagIds);
   for (const edge of detail.characters?.edges ?? []) {
     if (!edge?.node) continue;
 

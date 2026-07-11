@@ -108,15 +108,33 @@ export class SyncEngine {
     }
 
     if (changed.length === 0 && removed.length > 0) {
-      onProgress(`Only removals detected (${removed.length}). Skipping list fetches...`, 10);
+      onProgress(`Only removals detected (${removed.length}). Fetching lists for cleanup...`, 10);
       this.onLog?.(`Processing ${removed.length} removal(s) only`);
       const removalStats: SyncStats = { created: 0, updated: 0, deleted: 0, skipped: 0, failed: 0, planned: 0 };
       await this.handleRemovals(removed, removalStats);
       if (this.cancelled) {
         return this.cancelledStats();
       }
+
+      // Fetch full lists to determine currently active studios/staff for cleanup
+      const [fullAnimeLists, fullMangaLists] = await Promise.all([
+        this.anilist.fetchFullList("ANIME", this.username),
+        this.anilist.fetchFullList("MANGA", this.username),
+      ]);
+
+      // Build details map from cached details for remaining entries
       const detailsMap = new Map(cachedDetails);
       for (const k of removed) detailsMap.delete(k);
+
+      // Build artifacts to get current studios/staff
+      const built = buildAll(viewer, fullAnimeLists, fullMangaLists, detailsMap);
+      const currentStudioIds = new Set(built.studios.keys());
+      const currentStaffIds = new Set(built.staff.keys());
+
+      // Clean up orphaned studio/staff artifacts
+      await this.cleanupStudioArtifacts(removalStats, currentStudioIds);
+      await this.cleanupStaffArtifacts(removalStats, currentStaffIds);
+
       await this.updateCache(newSummary, detailsMap);
       onProgress("Done", 100);
       return removalStats;
@@ -222,6 +240,7 @@ export class SyncEngine {
     if (this.cancelled) return this.cancelledStats();
 
     const built = buildAll(viewer, fullAnimeLists, fullMangaLists, details);
+    const { mediaToStudios, mediaToStaff, mediaToTags } = built;
     const artifacts = buildArtifacts(built, this.syncedAt);
     const totalFiles = artifacts.length;
     const totalFolders = new Set(artifacts.map(a => a.folder)).size;
@@ -229,9 +248,12 @@ export class SyncEngine {
     this.onLog?.(`Artifacts: ${totalFiles} files across ${totalFolders} folders`);
 
     onProgress("Pre-computing hashes...", 57);
-    const prepared = await this.prepareArtifacts(artifacts);
-    onProgress(`Hashes computed: ${prepared.length}`, 60);
-    this.onLog?.(`Hashes computed for ${prepared.length} artifacts`);
+    const changedKeys = new Set(changed);
+    const prepared = await this.prepareArtifacts(artifacts, changedKeys, mediaToStudios, mediaToStaff, mediaToTags);
+    const skippedCount = prepared.filter(p => p.skipped).length;
+    const toProcess = prepared.length - skippedCount;
+    onProgress(`Hashes computed: ${toProcess} new/changed (${skippedCount} cached)`, 60);
+    this.onLog?.(`Hashes computed for ${toProcess} artifacts (${skippedCount} unchanged, skipped)`);
 
     if (this.cancelled) return this.cancelledStats();
 
@@ -249,6 +271,12 @@ export class SyncEngine {
     onProgress(`Removing ${removed.length} obsolete note(s)...`, 92);
     this.onLog?.(`Removing ${removed.length} obsolete note(s)`);
     await this.handleRemovals(removed, stats);
+
+    // Clean up orphaned studio/staff artifacts
+    const currentStudioIds = new Set(built.studios.keys());
+    const currentStaffIds = new Set(built.staff.keys());
+    await this.cleanupStudioArtifacts(stats, currentStudioIds);
+    await this.cleanupStaffArtifacts(stats, currentStaffIds);
 
     onProgress("Cleaning up legacy Voice-Actor files...", 94);
     await this.cleanupVoiceActorArtifacts(stats);
@@ -371,15 +399,40 @@ export class SyncEngine {
     return (name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
   }
 
-  private async prepareArtifacts(artifacts: ReturnType<typeof buildArtifacts>): Promise<PreparedArtifact[]> {
-    const stamped: PreparedArtifact[] = artifacts.map((a) => ({
-      artifact: a,
-      bodyForHash: stripHashMarker(a.body.split(SYNCED_AT_PLACEHOLDER).join(this.syncedAt)),
-      noteHash: "",
-    }));
-    const hashes = await Promise.all(stamped.map((p) => sha256Hex(p.bodyForHash)));
-    for (let i = 0; i < stamped.length; i += 1) stamped[i].noteHash = hashes[i];
-    return stamped;
+  private async prepareArtifacts(
+    artifacts: ReturnType<typeof buildArtifacts>,
+    changedKeys: Set<string>,
+    mediaToStudios: Map<string, Set<number>>,
+    mediaToStaff: Map<string, Set<number>>,
+    mediaToTags: Map<string, Set<number>>,
+  ): Promise<PreparedArtifact[]> {
+    const cachedHashes = this.cache?.noteHashes ?? {};
+    const needsHash: { a: ReturnType<typeof buildArtifacts>[number]; bodyForHash: string; idx: number }[] = [];
+    const result: (PreparedArtifact | null)[] = new Array(artifacts.length).fill(null);
+
+    for (let i = 0; i < artifacts.length; i++) {
+      const a = artifacts[i];
+      const cachedHash = cachedHashes[a.uniqueKey];
+
+      // Skip hashing if: has cached hash AND source not changed
+      if (cachedHash != null && !artifactNeedsUpdate(a.uniqueKey, changedKeys, mediaToStudios, mediaToStaff, mediaToTags)) {
+        result[i] = { artifact: a, bodyForHash: "", noteHash: cachedHash, skipped: true };
+        continue;
+      }
+
+      const bodyForHash = stripHashMarker(a.body.split(SYNCED_AT_PLACEHOLDER).join(this.syncedAt));
+      needsHash.push({ a, bodyForHash, idx: i });
+    }
+
+    // Hash only the ones that need it
+    const hashes = await Promise.all(needsHash.map((p) => sha256Hex(p.bodyForHash)));
+
+    for (let i = 0; i < needsHash.length; i++) {
+      const { a, bodyForHash, idx } = needsHash[i];
+      result[idx] = { artifact: a, bodyForHash, noteHash: hashes[i] };
+    }
+
+    return result as PreparedArtifact[];
   }
 
   private async writeArtifacts(
@@ -418,8 +471,16 @@ export class SyncEngine {
 
     let writtenCount = 0;
     const foldersWithWrites = new Set<string>();
+    const activeCount = resolved.filter(({ p }) => !p.skipped).length;
     await pMapLimit(resolved, WRITE_CONCURRENCY, async ({ p, vaultPath }) => {
       if (this.cancelled) return;
+
+      // Skip artifacts that were determined to be unchanged in prepareArtifacts
+      if (p.skipped) {
+        stats.skipped += 1;
+        return;
+      }
+
       const a = p.artifact;
       const { noteHash, bodyForHash } = p;
       const cachedHash = noteHashes[a.uniqueKey];
@@ -461,12 +522,12 @@ export class SyncEngine {
         writtenCount += 1;
         foldersWithWrites.add(a.folder);
         if (onWriteProgress && writtenCount % 50 === 0) {
-          onWriteProgress(writtenCount, prepared.length, foldersWithWrites.size);
+          onWriteProgress(writtenCount, activeCount, foldersWithWrites.size);
         }
       }
     });
 
-    onWriteProgress?.(prepared.length, prepared.length, foldersWithWrites.size);
+    onWriteProgress?.(activeCount, activeCount, foldersWithWrites.size);
     this.cache = { ...(this.cache ?? {}), noteHashes, paths: newPaths };
     return stats;
   }
@@ -589,6 +650,92 @@ export class SyncEngine {
     this.cache = { ...this.cache, noteHashes, paths };
   }
 
+  private async cleanupStudioArtifacts(stats: SyncStats, activeStudioIds: Set<number>): Promise<void> {
+    const paths = this.cache?.paths ?? {};
+    const noteHashes = this.cache?.noteHashes ?? {};
+    const toDelete: { k: string; vaultPath: string }[] = [];
+
+    for (const [key, vaultPath] of Object.entries(paths)) {
+      if (key.startsWith("studio:")) {
+        const studioId = Number(key.slice("studio:".length));
+        if (!activeStudioIds.has(studioId)) {
+          toDelete.push({ k: key, vaultPath });
+        }
+      }
+    }
+
+    if (toDelete.length === 0) return;
+
+    const deletedKeys: string[] = [];
+    let removed = 0;
+    await pMapLimit(toDelete, DELETE_CONCURRENCY, async ({ k, vaultPath }) => {
+      if (this.cancelled) return;
+      try {
+        await this.vault.delete(vaultPath);
+        stats.deleted += 1;
+        deletedKeys.push(k);
+        removed += 1;
+      } catch (e) {
+        if (/404/.test(String((e as Error)?.message))) {
+          deletedKeys.push(k);
+          removed += 1;
+        } else {
+          this.onLog?.(`  ! studio cleanup failed for ${vaultPath}: ${(e as Error)?.message ?? e}`);
+        }
+      }
+    });
+    for (const k of deletedKeys) {
+      delete noteHashes[k];
+      delete paths[k];
+    }
+
+    if (removed) this.onProgress?.(`  Studio clean-up: removed ${removed} file(s)`);
+    this.cache = { ...this.cache, noteHashes, paths };
+  }
+
+  private async cleanupStaffArtifacts(stats: SyncStats, activeStaffIds: Set<number>): Promise<void> {
+    const paths = this.cache?.paths ?? {};
+    const noteHashes = this.cache?.noteHashes ?? {};
+    const toDelete: { k: string; vaultPath: string }[] = [];
+
+    for (const [key, vaultPath] of Object.entries(paths)) {
+      if (key.startsWith("staff:")) {
+        const staffId = Number(key.slice("staff:".length));
+        if (!activeStaffIds.has(staffId)) {
+          toDelete.push({ k: key, vaultPath });
+        }
+      }
+    }
+
+    if (toDelete.length === 0) return;
+
+    const deletedKeys: string[] = [];
+    let removed = 0;
+    await pMapLimit(toDelete, DELETE_CONCURRENCY, async ({ k, vaultPath }) => {
+      if (this.cancelled) return;
+      try {
+        await this.vault.delete(vaultPath);
+        stats.deleted += 1;
+        deletedKeys.push(k);
+        removed += 1;
+      } catch (e) {
+        if (/404/.test(String((e as Error)?.message))) {
+          deletedKeys.push(k);
+          removed += 1;
+        } else {
+          this.onLog?.(`  ! staff cleanup failed for ${vaultPath}: ${(e as Error)?.message ?? e}`);
+        }
+      }
+    });
+    for (const k of deletedKeys) {
+      delete noteHashes[k];
+      delete paths[k];
+    }
+
+    if (removed) this.onProgress?.(`  Staff clean-up: removed ${removed} file(s)`);
+    this.cache = { ...this.cache, noteHashes, paths };
+  }
+
   private cacheCharacterPages(mediaId: number, type: string, hasCharacters: boolean): void {
     if (!this.cache.characterPages) {
       this.cache.characterPages = {};
@@ -618,10 +765,69 @@ interface PreparedArtifact {
   artifact: ReturnType<typeof buildArtifacts>[number];
   noteHash: string;
   bodyForHash: string;
+  skipped?: boolean;
 }
 
 function countEntries(lists: MediaList[]): number {
   return lists.reduce((acc, l) => acc + l.entries.length, 0);
+}
+
+function artifactNeedsUpdate(
+  uniqueKey: string,
+  changedKeys: Set<string>,
+  mediaToStudios: Map<string, Set<number>>,
+  mediaToStaff: Map<string, Set<number>>,
+  mediaToTags: Map<string, Set<number>>,
+): boolean {
+  // Media artifacts: uniqueKey IS the media key
+  if (changedKeys.has(uniqueKey)) return true;
+
+  // Character artifacts: "media-characters:{id}" or "media-characters:{slug}"
+  if (uniqueKey.startsWith("media-characters:")) {
+    const source = uniqueKey.slice("media-characters:".length);
+    // Numeric ID — check if source media changed
+    if (/^\d+$/.test(source)) {
+      return changedKeys.has(`ANIME:${source}`) || changedKeys.has(`MANGA:${source}`);
+    }
+    // Slug-based — can't directly match, re-process to be safe
+    return true;
+  }
+
+  // Profile and voice-actor-index: always process
+  if (uniqueKey === "profile" || uniqueKey === "voice-actor-index") return true;
+
+  // Studio artifacts: studio:{id} - check if linked to changed media
+  if (uniqueKey.startsWith("studio:")) {
+    const studioId = Number(uniqueKey.slice("studio:".length));
+    for (const changedKey of changedKeys) {
+      const studios = mediaToStudios.get(changedKey);
+      if (studios?.has(studioId)) return true;
+    }
+    return false;
+  }
+
+  // Staff artifacts: staff:{id}
+  if (uniqueKey.startsWith("staff:")) {
+    const staffId = Number(uniqueKey.slice("staff:".length));
+    for (const changedKey of changedKeys) {
+      const staff = mediaToStaff.get(changedKey);
+      if (staff?.has(staffId)) return true;
+    }
+    return false;
+  }
+
+  // Tag artifacts: tag:{id} or tag:-{hash}
+  if (uniqueKey.startsWith("tag:")) {
+    const tagId = Number(uniqueKey.slice("tag:".length));
+    if (!Number.isFinite(tagId)) return true; // synthetic tag
+    for (const changedKey of changedKeys) {
+      const tags = mediaToTags.get(changedKey);
+      if (tags?.has(tagId)) return true;
+    }
+    return false;
+  }
+
+  return false;
 }
 
 async function pMapLimit<T>(items: T[], limit: number, fn: (item: T, idx: number) => Promise<void>): Promise<void> {

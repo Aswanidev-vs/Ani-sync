@@ -756,7 +756,7 @@ export class SyncEngine {
           deletedKeys.push(k);
           removed += 1;
         } else {
-          this.onLog?.(`  ! ${label.toLowerCase()} cleanup failed: ${(e as Error)?.message ?? e}`);
+          this.onLog?.("  ! " + label.toLowerCase() + " cleanup failed for " + vaultPath + ": " + sanitizeLog(String((e as Error)?.message ?? e)));
         }
       }
     });

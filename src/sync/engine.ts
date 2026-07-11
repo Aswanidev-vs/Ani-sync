@@ -567,7 +567,7 @@ export class SyncEngine {
         newPaths[a.uniqueKey] = vaultPath;
       } catch (e) {
         stats.failed += 1;
-        this.onLog?.(`  ! write failed: ${sanitizeLog(String((e as Error)?.message ?? e))}`);
+        this.onLog?.("  ! write failed for " + vaultPath + ": " + sanitizeLog(String((e as Error)?.message ?? e)));
       } finally {
         writtenCount += 1;
         foldersWithWrites.add(a.folder);

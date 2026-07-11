@@ -631,7 +631,7 @@ export class SyncEngine {
   private async cleanupLegacyCharacterArtifacts(stats: SyncStats): Promise<void> {
     await this.cleanupByPredicate(
       stats,
-      (key) => key.startsWith("character:"),
+      (key, vaultPath) => key.startsWith("character:") && vaultPath.startsWith("Characters/"),
       "Legacy character",
     );
   }

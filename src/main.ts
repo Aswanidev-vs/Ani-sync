@@ -95,7 +95,6 @@ export default class AnisyncPlugin extends Plugin {
   private syncLog: SyncLogEntry[] = [];
   private logListeners: (() => void)[] = [];
   vaultContext: VaultContext | null = null;
-  cancelled = false;
 
   async onload(): Promise<void> {
     await this.loadAll();

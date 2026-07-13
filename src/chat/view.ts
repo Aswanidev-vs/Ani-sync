@@ -69,8 +69,13 @@ export class ChatView extends ItemView {
     this.historyDropdown = container.createDiv({ cls: "anisync-chat-history-dropdown" });
     this.historyDropdown.hide();
 
-    // Messages area
-    this.messagesEl = container.createDiv({ cls: "anisync-chat-messages", attr: { "role": "log", "aria-live": "polite", "aria-label": "Chat messages" } });
+    // Messages area with wrapper for pull-to-refresh
+    const messagesWrapper = container.createDiv({ cls: "anisync-chat-messages-wrapper" });
+    messagesWrapper.style.position = "relative";
+    messagesWrapper.style.flex = "1";
+    messagesWrapper.style.overflow = "hidden";
+
+    this.messagesEl = messagesWrapper.createDiv({ cls: "anisync-chat-messages", attr: { "role": "log", "aria-live": "polite", "aria-label": "Chat messages" } });
 
     // Input area
     const inputArea = container.createDiv({ cls: "anisync-chat-input-area" });
@@ -131,6 +136,9 @@ export class ChatView extends ItemView {
 
   private setupPullToRefresh(): void {
     const messagesEl = this.messagesEl;
+    const messagesWrapper = messagesEl.parentElement;
+    if (!messagesWrapper) return;
+
     let startY = 0;
     let isPulling = false;
     let pullDistance = 0;
@@ -157,8 +165,8 @@ export class ChatView extends ItemView {
       pointer-events: none;
       z-index: 10;
     `;
-    messagesEl.style.position = "relative";
-    messagesEl.insertBefore(refreshIndicator, messagesEl.firstChild);
+    // Insert into wrapper instead of messagesEl so it survives empty() calls
+    messagesWrapper.insertBefore(refreshIndicator, messagesWrapper.firstChild);
 
     const handleTouchStart = (e: TouchEvent) => {
       if (messagesEl.scrollTop === 0 && !this.isSending) {
@@ -192,11 +200,11 @@ export class ChatView extends ItemView {
     const handleTouchEnd = async () => {
       if (!isPulling) return;
       isPulling = false;
-      
+
       if (pullDistance >= THRESHOLD) {
         refreshIndicator.querySelector("span")!.textContent = "Refreshing...";
         refreshIndicator.querySelector("svg")?.setAttribute("style", "animation: spin 1s linear infinite;");
-        
+
         // Add spin animation
         const style = document.createElement("style");
         style.textContent = `@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`;
@@ -204,18 +212,26 @@ export class ChatView extends ItemView {
           style.setAttribute("data-pull-refresh", "true");
           document.head.appendChild(style);
         }
-        
-        await this.plugin.refreshPlugin();
-        this.messagesEl.empty();
-        this.showWelcome("Loading your library...");
-        await this.preloadVaultContext();
+
+        try {
+          await this.plugin.refreshPlugin();
+          this.messagesEl.empty();
+          this.showWelcome("Loading your library...");
+          await this.preloadVaultContext();
+        } finally {
+          // Reset indicator (always executes even if refresh throws)
+          refreshIndicator.style.opacity = "0";
+          refreshIndicator.style.transform = "translateX(-50%) translateY(0)";
+          refreshIndicator.querySelector("svg")?.removeAttribute("style");
+          pullDistance = 0;
+        }
+      } else {
+        // Reset indicator for incomplete pull
+        refreshIndicator.style.opacity = "0";
+        refreshIndicator.style.transform = "translateX(-50%) translateY(0)";
+        refreshIndicator.querySelector("svg")?.removeAttribute("style");
+        pullDistance = 0;
       }
-      
-      // Reset indicator
-      refreshIndicator.style.opacity = "0";
-      refreshIndicator.style.transform = "translateX(-50%) translateY(0)";
-      refreshIndicator.querySelector("svg")?.removeAttribute("style");
-      pullDistance = 0;
     };
 
     this.registerDomEvent(messagesEl, "touchstart", handleTouchStart, { passive: true });

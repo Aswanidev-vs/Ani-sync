@@ -557,6 +557,8 @@ export default class AnisyncPlugin extends Plugin {
   async refreshPlugin(): Promise<void> {
     // Invalidate vault context to force reload on next chat
     this.invalidateVaultContext();
+    // Invalidate vault context in all active ChatView instances
+    this.invalidateChatContext();
     // Clear any pending sync operations
     this.syncEngine?.cancel();
     // Force a re-sync if auto-sync is enabled

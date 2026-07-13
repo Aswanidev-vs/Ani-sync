@@ -1,5 +1,6 @@
 import { App, Modal, Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
 import { ChatView, CHAT_VIEW_TYPE } from "./chat/view";
+import { VaultContext } from "./chat/vaultContext";
 import { AnisyncSettings, DEFAULT_SETTINGS } from "./settings";
 import { AnisyncSettingTab } from "./settingsTab";
 import { AnilistClient } from "./anilist/client";
@@ -93,6 +94,8 @@ export default class AnisyncPlugin extends Plugin {
   private syncPopup = new SyncProgressPopup();
   private syncLog: SyncLogEntry[] = [];
   private logListeners: (() => void)[] = [];
+  vaultContext: VaultContext | null = null;
+  cancelled = false;
 
   async onload(): Promise<void> {
     await this.loadAll();
@@ -159,6 +162,15 @@ export default class AnisyncPlugin extends Plugin {
       hotkeys: [{ modifiers: ["Mod", "Shift"], key: "o" }],
       callback: () => {
         void this.openChatView();
+      },
+    });
+
+    this.addCommand({
+      id: "refresh-plugin",
+      name: "Refresh plugin (reload sync cache and UI)",
+      hotkeys: [{ modifiers: ["Mod", "Shift"], key: "r" }],
+      callback: () => {
+        void this.refreshPlugin();
       },
     });
 
@@ -527,12 +539,12 @@ export default class AnisyncPlugin extends Plugin {
     const { workspace } = this.app;
     let leaf = workspace.getLeavesOfType(CHAT_VIEW_TYPE)[0];
     if (!leaf) {
-      const rightLeaf = workspace.getRightLeaf(false);
-      if (!rightLeaf) {
+      // Open in main workspace area (center) instead of sidebar
+      leaf = workspace.getLeaf("tab");
+      if (!leaf) {
         new Notice("Cannot open chat view.", 3000);
         return;
       }
-      leaf = rightLeaf;
       await leaf.setViewState({ type: CHAT_VIEW_TYPE, active: true });
     }
     workspace.revealLeaf(leaf);
@@ -541,6 +553,23 @@ export default class AnisyncPlugin extends Plugin {
   async clearCache(): Promise<void> {
     this.cache = emptyCache();
     await this.saveAll();
+  }
+
+  async refreshPlugin(): Promise<void> {
+    // Invalidate vault context to force reload on next chat
+    this.invalidateVaultContext();
+    // Clear any pending sync operations
+    this.cancelled = true;
+    // Force a re-sync if auto-sync is enabled
+    if (this.settings.enableAutoSync && this.canSync()) {
+      this.startAutoSync();
+    }
+    new Notice("Plugin refreshed", 2000);
+  }
+
+  invalidateVaultContext(): void {
+    this.vaultContext?.invalidate();
+    this.vaultContext = null;
   }
 
   pushLog(message: string): void {

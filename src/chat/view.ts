@@ -235,13 +235,18 @@ export class ChatView extends ItemView {
     this.registerDomEvent(messagesEl, "touchcancel", handleTouchEnd, { passive: true });
   }
 
-  private async preloadVaultContext(): Promise<void> {
+  private ensureVaultContext(): VaultContext {
     const outputDir = this.plugin.settings.outputDir;
     if (!this.vaultContext || this.lastOutputDir !== outputDir) {
       this.vaultContext = new VaultContext(this.plugin.app, outputDir);
       this.lastOutputDir = outputDir;
     }
-    await this.vaultContext.load((msg) => this.showWelcome(msg));
+    return this.vaultContext;
+  }
+
+  private async preloadVaultContext(): Promise<void> {
+    const vaultContext = this.ensureVaultContext();
+    await vaultContext.load((msg) => this.showWelcome(msg));
     if (!this.hasChatMessages()) {
       this.showWelcome();
     }
@@ -409,14 +414,8 @@ export class ChatView extends ItemView {
         return;
       }
 
-      const outputDir = this.plugin.settings.outputDir;
-      if (!this.vaultContext || this.lastOutputDir !== outputDir) {
-        this.vaultContext = new VaultContext(this.plugin.app, outputDir);
-        this.lastOutputDir = outputDir;
-      }
-
       // Save local reference in case invalidateVaultContext() is called during async ops
-      const vaultContext = this.vaultContext;
+      const vaultContext = this.ensureVaultContext();
 
       // Create assistant bubble FIRST so errors are visible
       const msgEl = this.createAssistantBubble();
@@ -597,11 +596,8 @@ export class ChatView extends ItemView {
   }
 
   private addAssistantMessage(text: string, save = true, timestamp?: number): void {
-    this.removeWelcome();
-    const msg = this.messagesEl.createDiv({ cls: "anisync-chat-message anisync-chat-message-assistant" });
-    const icon = msg.createSpan({ cls: "anisync-chat-avatar" });
-    icon.textContent = "AI";
-    const bubble = msg.createDiv({ cls: "anisync-chat-bubble" });
+    const msg = this.createAssistantBubble();
+    const bubble = msg.querySelector(".anisync-chat-bubble") as HTMLDivElement;
     this.renderMarkdown(bubble, text, false);
     const timeEl = msg.createDiv({ cls: "anisync-chat-timestamp" });
     const ts = timestamp ?? Date.now();

@@ -69,8 +69,13 @@ export class ChatView extends ItemView {
     this.historyDropdown = container.createDiv({ cls: "anisync-chat-history-dropdown" });
     this.historyDropdown.hide();
 
-    // Messages area
-    this.messagesEl = container.createDiv({ cls: "anisync-chat-messages", attr: { "role": "log", "aria-live": "polite", "aria-label": "Chat messages" } });
+    // Messages area with wrapper for pull-to-refresh
+    const messagesWrapper = container.createDiv({ cls: "anisync-chat-messages-wrapper" });
+    messagesWrapper.style.position = "relative";
+    messagesWrapper.style.flex = "1";
+    messagesWrapper.style.overflow = "hidden";
+
+    this.messagesEl = messagesWrapper.createDiv({ cls: "anisync-chat-messages", attr: { "role": "log", "aria-live": "polite", "aria-label": "Chat messages" } });
 
     // Input area
     const inputArea = container.createDiv({ cls: "anisync-chat-input-area" });
@@ -131,6 +136,9 @@ export class ChatView extends ItemView {
 
   private setupPullToRefresh(): void {
     const messagesEl = this.messagesEl;
+    const messagesWrapper = messagesEl.parentElement;
+    if (!messagesWrapper) return;
+
     let startY = 0;
     let isPulling = false;
     let pullDistance = 0;
@@ -157,8 +165,8 @@ export class ChatView extends ItemView {
       pointer-events: none;
       z-index: 10;
     `;
-    messagesEl.style.position = "relative";
-    messagesEl.insertBefore(refreshIndicator, messagesEl.firstChild);
+    // Insert into wrapper instead of messagesEl so it survives empty() calls
+    messagesWrapper.insertBefore(refreshIndicator, messagesWrapper.firstChild);
 
     const svgEl = refreshIndicator.querySelector("svg");
     const spanEl = refreshIndicator.querySelector("span");

@@ -1087,6 +1087,11 @@
   font-size: 14px;
 }
 
+@keyframes anisync-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 .anisync-history-item:hover .anisync-history-item-delete {
   opacity: 1;
 }

@@ -237,11 +237,13 @@ export class ChatView extends ItemView {
 
   private ensureVaultContext(): VaultContext {
     const outputDir = this.plugin.settings.outputDir;
-    if (!this.vaultContext || this.lastOutputDir !== outputDir) {
-      this.vaultContext = new VaultContext(this.plugin.app, outputDir);
+    let vaultContext = this.vaultContext;
+    if (!vaultContext || this.lastOutputDir !== outputDir) {
+      vaultContext = new VaultContext(this.plugin.app, outputDir);
+      this.vaultContext = vaultContext;
       this.lastOutputDir = outputDir;
     }
-    return this.vaultContext;
+    return vaultContext;
   }
 
   private async preloadVaultContext(): Promise<void> {

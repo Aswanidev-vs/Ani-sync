@@ -558,7 +558,7 @@ export default class AnisyncPlugin extends Plugin {
     // Invalidate vault context to force reload on next chat
     this.invalidateVaultContext();
     // Clear any pending sync operations
-    this.cancelled = true;
+    this.syncEngine?.cancel();
     // Force a re-sync if auto-sync is enabled
     if (this.settings.enableAutoSync && this.canSync()) {
       this.startAutoSync();

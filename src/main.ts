@@ -95,7 +95,6 @@ export default class AnisyncPlugin extends Plugin {
   private syncLog: SyncLogEntry[] = [];
   private logListeners: (() => void)[] = [];
   vaultContext: VaultContext | null = null;
-  cancelled = false;
 
   async onload(): Promise<void> {
     await this.loadAll();
@@ -558,8 +557,10 @@ export default class AnisyncPlugin extends Plugin {
   async refreshPlugin(): Promise<void> {
     // Invalidate vault context to force reload on next chat
     this.invalidateVaultContext();
-    // Clear any pending sync operations
-    this.cancelled = true;
+    // Invalidate all open ChatView instances
+    this.invalidateChatContext();
+    // Cancel any active sync operations
+    this.syncEngine?.cancel();
     // Force a re-sync if auto-sync is enabled
     if (this.settings.enableAutoSync && this.canSync()) {
       this.startAutoSync();

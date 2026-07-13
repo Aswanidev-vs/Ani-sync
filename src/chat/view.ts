@@ -160,8 +160,14 @@ export class ChatView extends ItemView {
     messagesEl.style.position = "relative";
     messagesEl.insertBefore(refreshIndicator, messagesEl.firstChild);
 
+    const svgEl = refreshIndicator.querySelector("svg");
+    const spanEl = refreshIndicator.querySelector("span");
+
     const handleTouchStart = (e: TouchEvent) => {
       if (messagesEl.scrollTop === 0 && !this.isSending) {
+        if (refreshIndicator.parentNode !== messagesEl) {
+          messagesEl.insertBefore(refreshIndicator, messagesEl.firstChild);
+        }
         startY = e.touches[0].clientY;
         isPulling = true;
       }
@@ -171,20 +177,20 @@ export class ChatView extends ItemView {
       if (!isPulling) return;
       const currentY = e.touches[0].clientY;
       pullDistance = Math.max(0, currentY - startY);
-      
+
       if (pullDistance > 0) {
         e.preventDefault();
         const progress = Math.min(pullDistance / THRESHOLD, 1);
         const limitedPull = Math.min(pullDistance, MAX_PULL);
-        
+
         refreshIndicator.style.opacity = String(progress);
         refreshIndicator.style.transform = `translateX(-50%) translateY(${limitedPull * 0.5}px)`;
-        refreshIndicator.querySelector("svg")?.setAttribute("style", `transform: rotate(${progress * 180}deg); transition: transform 0.1s;`);
-        
-        if (pullDistance >= THRESHOLD) {
-          refreshIndicator.querySelector("span")!.textContent = "Release to refresh";
-        } else {
-          refreshIndicator.querySelector("span")!.textContent = "Pull to refresh";
+        if (svgEl) {
+          svgEl.style.transform = `rotate(${progress * 180}deg)`;
+          svgEl.style.transition = "transform 0.1s";
+        }
+        if (spanEl) {
+          spanEl.textContent = pullDistance >= THRESHOLD ? "Release to refresh" : "Pull to refresh";
         }
       }
     };
@@ -192,30 +198,27 @@ export class ChatView extends ItemView {
     const handleTouchEnd = async () => {
       if (!isPulling) return;
       isPulling = false;
-      
-      if (pullDistance >= THRESHOLD) {
-        refreshIndicator.querySelector("span")!.textContent = "Refreshing...";
-        refreshIndicator.querySelector("svg")?.setAttribute("style", "animation: spin 1s linear infinite;");
-        
-        // Add spin animation
-        const style = document.createElement("style");
-        style.textContent = `@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`;
-        if (!document.querySelector("style[data-pull-refresh]")) {
-          style.setAttribute("data-pull-refresh", "true");
-          document.head.appendChild(style);
+
+      try {
+        if (pullDistance >= THRESHOLD) {
+          if (spanEl) spanEl.textContent = "Refreshing...";
+          if (svgEl) svgEl.style.animation = "anisync-spin 1s linear infinite";
+
+          await this.plugin.refreshPlugin();
+          this.messagesEl.empty();
+          this.showWelcome("Loading your library...");
+          await this.preloadVaultContext();
         }
-        
-        await this.plugin.refreshPlugin();
-        this.messagesEl.empty();
-        this.showWelcome("Loading your library...");
-        await this.preloadVaultContext();
+      } finally {
+        refreshIndicator.style.opacity = "0";
+        refreshIndicator.style.transform = "translateX(-50%) translateY(0)";
+        if (svgEl) {
+          svgEl.style.transform = "";
+          svgEl.style.transition = "";
+          svgEl.style.animation = "";
+        }
+        pullDistance = 0;
       }
-      
-      // Reset indicator
-      refreshIndicator.style.opacity = "0";
-      refreshIndicator.style.transform = "translateX(-50%) translateY(0)";
-      refreshIndicator.querySelector("svg")?.removeAttribute("style");
-      pullDistance = 0;
     };
 
     this.registerDomEvent(messagesEl, "touchstart", handleTouchStart, { passive: true });

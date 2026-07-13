@@ -1138,3 +1138,8 @@
 .anisync-chat-header-title {
   margin-right: auto;
 }
+
+@keyframes anisync-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

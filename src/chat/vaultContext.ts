@@ -99,6 +99,10 @@ const QUERY_STOP_WORDS = new Set([
   "tell", "me", "about", "the", "a", "an", "of",
   "in", "on", "at", "to", "from", "for", "and",
   "or", "please", "by", "series",
+  // Query-intent / quality words that must not act as entity discriminators
+  "summarize", "summary", "describe", "details", "detail", "explain", "explanation",
+  "overview", "review", "recommend", "recommendation", "show", "give", "list", "info",
+  "best", "worst", "good", "great", "top", "favorite", "can", "you", "want", "need",
 ]);
 
 // Media-type words that should not act as entity discriminators when matching titles.

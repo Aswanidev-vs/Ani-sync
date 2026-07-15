@@ -549,11 +549,6 @@ export default class AnisyncPlugin extends Plugin {
     workspace.revealLeaf(leaf);
   }
 
-  async clearCache(): Promise<void> {
-    this.cache = emptyCache();
-    await this.saveAll();
-  }
-
   async refreshPlugin(): Promise<void> {
     // Invalidate vault context to force reload on next chat
     this.invalidateVaultContext();
@@ -571,6 +566,11 @@ export default class AnisyncPlugin extends Plugin {
   invalidateVaultContext(): void {
     this.vaultContext?.invalidate();
     this.vaultContext = null;
+  }
+
+  async clearCache(): Promise<void> {
+    this.cache = emptyCache();
+    await this.saveAll();
   }
 
   pushLog(message: string): void {

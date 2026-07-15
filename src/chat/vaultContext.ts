@@ -99,7 +99,29 @@ const QUERY_STOP_WORDS = new Set([
   "tell", "me", "about", "the", "a", "an", "of",
   "in", "on", "at", "to", "from", "for", "and",
   "or", "please", "by", "series",
+  // Query-intent / quality words that must not act as entity discriminators
+  "summarize", "summary", "describe", "details", "detail", "explain", "explanation",
+  "overview", "review", "recommend", "recommendation", "show", "give", "list", "info",
+  "best", "worst", "good", "great", "top", "favorite", "can", "you", "want", "need",
 ]);
+
+// Media-type words that should not act as entity discriminators when matching titles.
+// Verbs like "read"/"watch" are intentionally excluded so titles such as "Read or Die" keep their tokens.
+const TYPE_WORDS = new Set([
+  "anime", "manga", "tv", "ova", "ona", "movie", "film", "novel", "ln",
+]);
+
+// A single CJK character is a meaningful token and must not be dropped for being "short"
+const CJK_REGEX = /[一-鿿぀-ヿ가-힯]/;
+function isMeaningfulToken(t: string): boolean {
+  return t.length > 2 || CJK_REGEX.test(t);
+}
+// Word-boundary containment for Latin tokens; char-level for CJK (no word boundaries there)
+function titleContainsToken(titleLower: string, token: string): boolean {
+  if (CJK_REGEX.test(token)) return titleLower.includes(token);
+  // Split title on non-alphanumeric to get words, then exact-match the token
+  return titleLower.split(/[^a-z0-9]+/).filter(w => w.length > 0).includes(token);
+}
 
 // Stop words excluded from indexing to improve IDF discriminative power
 const INDEX_STOP_WORDS = new Set([
@@ -861,11 +883,23 @@ class SearchIndex {
 
       // Also check expanded synonyms against title
       if (score < 70) {
-        for (const word of expandedQuery.split(/\s+/)) {
-          if (word !== q && entry.node.title.toLowerCase().includes(word)) {
-            score = Math.max(score, 65);
-            matchedField = "synonym:title";
-          }
+        const titleLower = entry.node.title.toLowerCase();
+        const sigTokens = tokenize(q).filter(t => isMeaningfulToken(t) && !QUERY_STOP_WORDS.has(t) && !TYPE_WORDS.has(t));
+        // Keep media-type words (movie, tv, ...) in the title so "X The Movie" stays distinct from "X"
+        const titleSigTokens = entry.titleTokens.filter(t => isMeaningfulToken(t) && !QUERY_STOP_WORDS.has(t));
+        const titleSet = new Set(titleSigTokens);
+        const sigSet = new Set(sigTokens);
+        const exactEntity =
+          sigTokens.length > 0 &&
+          [...titleSet].every(t => sigSet.has(t)) &&
+          [...sigSet].every(t => titleSet.has(t));
+        const partial = sigTokens.some(t => titleContainsToken(titleLower, t));
+        let titleBase = 0;
+        if (exactEntity) titleBase = 92;
+        else if (partial) titleBase = 64;
+        if (titleBase > score) {
+          score = titleBase;
+          matchedField = exactEntity ? "title:canonical" : "synonym:title";
         }
       }
 
@@ -1457,6 +1491,8 @@ export class VaultContext {
         return !Number.isNaN(year) && year <= constraints.maxYear!;
       });
     }
+
+    filteredResults.sort((a, b) => b.score - a.score);
 
     // Multi-term fallback: when search gives low scores, find nodes containing ALL query terms
     const needsFallback = filteredResults.length === 0 || filteredResults[0].score < 30;

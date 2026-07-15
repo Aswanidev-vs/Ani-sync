@@ -101,6 +101,12 @@ const QUERY_STOP_WORDS = new Set([
   "or", "please", "by", "series",
 ]);
 
+// Media-type / generic words that should not act as entity discriminators when boosting by title
+const TYPE_WORDS = new Set([
+  "anime", "manga", "tv", "ova", "ona", "movie", "film",
+  "novel", "ln", "read", "watch", "watching", "reading", "listen",
+]);
+
 // Stop words excluded from indexing to improve IDF discriminative power
 const INDEX_STOP_WORDS = new Set([
   "the", "a", "an", "of", "in", "on", "at", "to", "from", "for", "and", "or",
@@ -1458,6 +1464,11 @@ export class VaultContext {
       });
     }
 
+    // Boost canonical entity matches (e.g. main "BLEACH" over "Bleach: The Sealed Sword Frenzy")
+    // so the most relevant file ranks first regardless of document length.
+    this.applyTitleBoost(filteredResults, query);
+    filteredResults.sort((a, b) => b.score - a.score);
+
     // Multi-term fallback: when search gives low scores, find nodes containing ALL query terms
     const needsFallback = filteredResults.length === 0 || filteredResults[0].score < 30;
     if (needsFallback) {
@@ -1479,6 +1490,7 @@ export class VaultContext {
           }
         }
         if (fallback.length > 0) {
+          this.applyTitleBoost(fallback, query);
           fallback.sort((a, b) => b.score - a.score);
           return fallback.slice(0, 20);
         }
@@ -1486,6 +1498,33 @@ export class VaultContext {
     }
 
     return filteredResults.length > 0 ? filteredResults : allResults;
+  }
+
+  // Boost results whose title matches the query entity, so the canonical entry
+  // (e.g. "BLEACH") outranks longer variant files ("Bleach: The Sealed Sword Frenzy").
+  private applyTitleBoost(results: VaultSearchResult[], query: string): void {
+    const sigTokens = tokenize(query).filter(
+      (t) => t.length > 2 && !QUERY_STOP_WORDS.has(t) && !TYPE_WORDS.has(t)
+    );
+    if (sigTokens.length === 0) return;
+    const sigSet = new Set(sigTokens);
+
+    for (const r of results) {
+      const titleTokens = tokenize(r.node.title);
+      if (titleTokens.length === 0) continue;
+      const titleSet = new Set(titleTokens);
+      const exact =
+        [...titleSet].every((t) => sigSet.has(t)) &&
+        [...sigSet].every((t) => titleSet.has(t));
+      const covered = sigTokens.filter((t) => titleSet.has(t)).length;
+      const coverage = covered / sigTokens.length;
+
+      let boost: number;
+      if (exact) boost = 120;
+      else if (coverage >= 1) boost = 40;
+      else boost = coverage * 25;
+      r.score += boost;
+    }
   }
 
   getAllMedia(): VaultNode[] { return this.nodes.filter((n) => n.type === "anime" || n.type === "manga"); }

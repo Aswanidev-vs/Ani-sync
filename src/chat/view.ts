@@ -57,20 +57,25 @@ export class ChatView extends ItemView {
     title.textContent = "Ani-sync Chat";
     // History button (placed first)
     this.historyBtn = header.createEl("button", { cls: "anisync-chat-history-btn", title: "Chat history", attr: { "aria-label": "Chat history" } });
-    this.historyBtn.innerHTML = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>`;
+    this.historyBtn.innerHTML = `<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>`;
     this.historyBtn.onclick = () => this.toggleHistoryDropdown();
 
     // New chat button (placed after history)
     this.newChatBtn = header.createEl("button", { cls: "anisync-chat-new-btn", title: "New chat", attr: { "aria-label": "New chat" } });
-    this.newChatBtn.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>`;
+    this.newChatBtn.innerHTML = `<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>`;
     this.newChatBtn.onclick = () => this.clearChat();
 
     // History dropdown (hidden by default)
     this.historyDropdown = container.createDiv({ cls: "anisync-chat-history-dropdown" });
     this.historyDropdown.hide();
 
-    // Messages area
-    this.messagesEl = container.createDiv({ cls: "anisync-chat-messages", attr: { "role": "log", "aria-live": "polite", "aria-label": "Chat messages" } });
+    // Messages area with wrapper for pull-to-refresh
+    const messagesWrapper = container.createDiv({ cls: "anisync-chat-messages-wrapper" });
+    messagesWrapper.style.position = "relative";
+    messagesWrapper.style.flex = "1";
+    messagesWrapper.style.overflow = "hidden";
+
+    this.messagesEl = messagesWrapper.createDiv({ cls: "anisync-chat-messages", attr: { "role": "log", "aria-live": "polite", "aria-label": "Chat messages" } });
 
     // Input area
     const inputArea = container.createDiv({ cls: "anisync-chat-input-area" });
@@ -118,6 +123,9 @@ export class ChatView extends ItemView {
 
     this.preloadVaultContext();
 
+    // Swipe-to-refresh for mobile
+    this.setupPullToRefresh();
+
     // Close dropdown when clicking outside
     this.registerDomEvent(document, "click", (e) => {
       if (!this.historyDropdown.contains(e.target as Node) && e.target !== this.historyBtn) {
@@ -126,13 +134,121 @@ export class ChatView extends ItemView {
     });
   }
 
-  private async preloadVaultContext(): Promise<void> {
+  private setupPullToRefresh(): void {
+    const messagesEl = this.messagesEl;
+    const messagesWrapper = messagesEl.parentElement;
+    if (!messagesWrapper) return;
+
+    let startY = 0;
+    let isPulling = false;
+    let pullDistance = 0;
+    const THRESHOLD = 80;
+    const MAX_PULL = 120;
+
+    const refreshIndicator = document.createElement("div");
+    refreshIndicator.className = "anisync-pull-to-refresh";
+    refreshIndicator.innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg><span>Pull to refresh</span>`;
+    refreshIndicator.style.cssText = `
+      position: absolute;
+      top: -60px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      color: var(--text-muted);
+      font-size: 13px;
+      white-space: nowrap;
+      opacity: 0;
+      transition: opacity 0.2s, transform 0.2s;
+      pointer-events: none;
+      z-index: 10;
+    `;
+    // Insert into wrapper instead of messagesEl so it survives empty() calls
+    messagesWrapper.insertBefore(refreshIndicator, messagesWrapper.firstChild);
+
+    const svgEl = refreshIndicator.querySelector("svg");
+    const spanEl = refreshIndicator.querySelector("span");
+
+    const handleTouchStart = (e: TouchEvent) => {
+      if (messagesEl.scrollTop === 0 && !this.isSending) {
+        if (refreshIndicator.parentNode !== messagesEl) {
+          messagesEl.insertBefore(refreshIndicator, messagesEl.firstChild);
+        }
+        startY = e.touches[0].clientY;
+        isPulling = true;
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!isPulling) return;
+      const currentY = e.touches[0].clientY;
+      pullDistance = Math.max(0, currentY - startY);
+
+      if (pullDistance > 0) {
+        e.preventDefault();
+        const progress = Math.min(pullDistance / THRESHOLD, 1);
+        const limitedPull = Math.min(pullDistance, MAX_PULL);
+
+        refreshIndicator.style.opacity = String(progress);
+        refreshIndicator.style.transform = `translateX(-50%) translateY(${limitedPull * 0.5}px)`;
+        if (svgEl) {
+          svgEl.style.transform = `rotate(${progress * 180}deg)`;
+          svgEl.style.transition = "transform 0.1s";
+        }
+        if (spanEl) {
+          spanEl.textContent = pullDistance >= THRESHOLD ? "Release to refresh" : "Pull to refresh";
+        }
+      }
+    };
+
+    const handleTouchEnd = async () => {
+      if (!isPulling) return;
+      isPulling = false;
+
+      try {
+        if (pullDistance >= THRESHOLD) {
+          if (spanEl) spanEl.textContent = "Refreshing...";
+          if (svgEl) svgEl.style.animation = "anisync-spin 1s linear infinite";
+
+          await this.plugin.refreshPlugin();
+          this.messagesEl.empty();
+          this.showWelcome("Loading your library...");
+          await this.preloadVaultContext();
+        }
+      } finally {
+        refreshIndicator.style.opacity = "0";
+        refreshIndicator.style.transform = "translateX(-50%) translateY(0)";
+        if (svgEl) {
+          svgEl.style.transform = "";
+          svgEl.style.transition = "";
+          svgEl.style.animation = "";
+        }
+        pullDistance = 0;
+      }
+    };
+
+    this.registerDomEvent(messagesEl, "touchstart", handleTouchStart, { passive: true });
+    this.registerDomEvent(messagesEl, "touchmove", handleTouchMove, { passive: false });
+    this.registerDomEvent(messagesEl, "touchend", handleTouchEnd, { passive: true });
+    this.registerDomEvent(messagesEl, "touchcancel", handleTouchEnd, { passive: true });
+  }
+
+  private ensureVaultContext(): VaultContext {
     const outputDir = this.plugin.settings.outputDir;
-    if (!this.vaultContext || this.lastOutputDir !== outputDir) {
-      this.vaultContext = new VaultContext(this.plugin.app, outputDir);
+    let vaultContext = this.vaultContext;
+    if (!vaultContext || this.lastOutputDir !== outputDir) {
+      vaultContext = new VaultContext(this.plugin.app, outputDir);
+      this.vaultContext = vaultContext;
       this.lastOutputDir = outputDir;
     }
-    await this.vaultContext.load((msg) => this.showWelcome(msg));
+    return vaultContext;
+  }
+
+  private async preloadVaultContext(): Promise<void> {
+    const vaultContext = this.ensureVaultContext();
+    await vaultContext.load((msg) => this.showWelcome(msg));
     if (!this.hasChatMessages()) {
       this.showWelcome();
     }
@@ -191,7 +307,7 @@ export class ChatView extends ItemView {
       metaEl.setText(`${session.messages.length} messages · ${timeStr}`);
 
       const deleteBtn = item.createEl("button", { cls: "anisync-history-item-delete", attr: { "aria-label": "Delete chat" } });
-      deleteBtn.innerHTML = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`;
+      deleteBtn.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`;
       deleteBtn.onclick = (e) => {
         e.stopPropagation();
         this.deleteSession(session.id);
@@ -300,14 +416,8 @@ export class ChatView extends ItemView {
         return;
       }
 
-      const outputDir = this.plugin.settings.outputDir;
-      if (!this.vaultContext || this.lastOutputDir !== outputDir) {
-        this.vaultContext = new VaultContext(this.plugin.app, outputDir);
-        this.lastOutputDir = outputDir;
-      }
-
       // Save local reference in case invalidateVaultContext() is called during async ops
-      const vaultContext = this.vaultContext;
+      const vaultContext = this.ensureVaultContext();
 
       // Create assistant bubble FIRST so errors are visible
       const msgEl = this.createAssistantBubble();
@@ -488,11 +598,8 @@ export class ChatView extends ItemView {
   }
 
   private addAssistantMessage(text: string, save = true, timestamp?: number): void {
-    this.removeWelcome();
-    const msg = this.messagesEl.createDiv({ cls: "anisync-chat-message anisync-chat-message-assistant" });
-    const icon = msg.createSpan({ cls: "anisync-chat-avatar" });
-    icon.textContent = "AI";
-    const bubble = msg.createDiv({ cls: "anisync-chat-bubble" });
+    const msg = this.createAssistantBubble();
+    const bubble = msg.querySelector(".anisync-chat-bubble") as HTMLDivElement;
     this.renderMarkdown(bubble, text, false);
     const timeEl = msg.createDiv({ cls: "anisync-chat-timestamp" });
     const ts = timestamp ?? Date.now();
@@ -514,11 +621,12 @@ export class ChatView extends ItemView {
     const w = this.messagesEl.querySelector(".anisync-chat-welcome");
     if (w) {
       w.remove();
-      this.messagesEl.style.backgroundImage = "";
-      this.messagesEl.style.backgroundRepeat = "";
-      this.messagesEl.style.backgroundPosition = "";
-      this.messagesEl.style.backgroundSize = "";
     }
+    // Always clear background styles in case empty() already removed the welcome element
+    this.messagesEl.style.backgroundImage = "";
+    this.messagesEl.style.backgroundRepeat = "";
+    this.messagesEl.style.backgroundPosition = "";
+    this.messagesEl.style.backgroundSize = "";
   }
 
   private hasChatMessages(): boolean {

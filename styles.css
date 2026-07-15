@@ -411,8 +411,16 @@
   transform: scale(0.95);
 }
 
+.anisync-chat-messages-wrapper {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  width: 100%;
+}
+
 .anisync-chat-messages {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   padding: 16px 12px;
   display: flex;
@@ -984,8 +992,8 @@
 
 /* History button */
 .anisync-chat-history-btn {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   border-radius: 8px;
   border: 1px solid var(--background-modifier-border);
   background: var(--background-secondary);
@@ -996,6 +1004,7 @@
   justify-content: center;
   transition: color 0.15s, background 0.15s, transform 0.15s;
   flex-shrink: 0;
+  font-size: 16px;
 }
 
 .anisync-chat-history-btn:hover {
@@ -1070,8 +1079,8 @@
 }
 
 .anisync-history-item-delete {
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border-radius: 6px;
   border: none;
   background: transparent;
@@ -1083,6 +1092,12 @@
   opacity: 0.5;
   transition: opacity 0.1s, color 0.1s, background 0.1s;
   flex-shrink: 0;
+  font-size: 14px;
+}
+
+@keyframes anisync-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .anisync-history-item:hover .anisync-history-item-delete {

@@ -867,11 +867,22 @@ class SearchIndex {
 
       // Also check expanded synonyms against title
       if (score < 70) {
-        for (const word of expandedQuery.split(/\s+/)) {
-          if (word !== q && entry.node.title.toLowerCase().includes(word)) {
-            score = Math.max(score, 65);
-            matchedField = "synonym:title";
-          }
+        const titleLower = entry.node.title.toLowerCase();
+        const sigTokens = tokenize(q).filter(t => t.length > 2 && !QUERY_STOP_WORDS.has(t) && !TYPE_WORDS.has(t));
+        const titleSigTokens = tokenize(entry.node.title).filter(t => !TYPE_WORDS.has(t) && t.length > 1);
+        const titleSet = new Set(titleSigTokens);
+        const sigSet = new Set(sigTokens);
+        const exactEntity =
+          sigTokens.length > 0 &&
+          [...titleSet].every(t => sigSet.has(t)) &&
+          [...sigSet].every(t => titleSet.has(t));
+        const partial = sigTokens.some(t => titleLower.includes(t));
+        let titleBase = 0;
+        if (exactEntity) titleBase = 92;
+        else if (partial) titleBase = 64;
+        if (titleBase > score) {
+          score = titleBase;
+          matchedField = exactEntity ? "title:canonical" : "synonym:title";
         }
       }
 

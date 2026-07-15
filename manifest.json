@@ -1,7 +1,7 @@
 {
 	"id": "ani-sync",
 	"name": "Ani-sync",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"minAppVersion": "1.4.0",
 	"description": "Sync your AniList anime, manga, staff, tags & studios into your vault as wikilinked markdown notes with images.",
 	"author": "agniveshtm",

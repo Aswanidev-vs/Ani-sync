@@ -116,13 +116,11 @@ const CJK_REGEX = /[一-鿿぀-ヿ가-힯]/;
 function isMeaningfulToken(t: string): boolean {
   return t.length > 2 || CJK_REGEX.test(t);
 }
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 // Word-boundary containment for Latin tokens; char-level for CJK (no word boundaries there)
 function titleContainsToken(titleLower: string, token: string): boolean {
   if (CJK_REGEX.test(token)) return titleLower.includes(token);
-  return new RegExp(`\\b${escapeRegex(token)}\\b`, "i").test(titleLower);
+  // Split title on non-alphanumeric to get words, then exact-match the token
+  return titleLower.split(/[^a-z0-9]+/).filter(w => w.length > 0).includes(token);
 }
 
 // Stop words excluded from indexing to improve IDF discriminative power
